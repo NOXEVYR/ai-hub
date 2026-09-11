@@ -1,0 +1,2 @@
+7a326fd732863273707f6ca50e6fa75296d7bcb1a9bf07dbb9c3bfbf00043e05  AI-Hub-v2.6.0-Source.zip
+7da088d457c5abae61b9dc906626bec9f5c27854d9df6c4598165e7a408d60f3  AI-Hub-v2.6.0-Windows-x64.zip

@@ -57,7 +57,7 @@ def scan_all(db, cfg, progress_cb=None):
 
 def _scan_all(db, cfg, progress_cb=None):
     """完整扫描：返回 {file_count, dir_count, model_groups}，并把 files/dirs 写入数据库。"""
-    roots = cfg.get("scan_roots") or [cfg.get("ai_root")]
+    roots = cfg.get("scan_roots", [cfg.get("ai_root")]) or []
     ignore = {name.casefold() for name in (cfg.get("ignore_dirs") or [])}
     dirs_agg = {}          # path -> [size, file_count, dir_count]
     dirs_rows_ignored = [] # 被忽略目录的占位行
@@ -259,15 +259,25 @@ def build_models(db, cfg, scan_result, progress_cb=None):
         stats["filesystem"] += 1
     report(f"现场补充新模型：{stats['filesystem']} 个")
 
-    # ---- 3. 清理：非编目（现场发现）但已不在盘上的旧行 ----
+    # ---- 3. Preserve personal records when scan roots or compatibility paths change. ----
+    # A path absent from this scan is not proof the model or its annotations can
+    # be deleted. Keep the row and mark it unavailable until a later scan finds
+    # it again. Canonical matching also retains live legacy junction aliases.
+    indexed_paths = {classification.path_key(os.path.realpath(row['path']))
+                     for row in db.query("SELECT path FROM files WHERE category='model'")}
+    unavailable = []
+    available = []
+    for row in db.query("SELECT path FROM models WHERE legacy_uid IS NULL"):
+        canonical = classification.path_key(os.path.realpath(row['path']))
+        (available if canonical in indexed_paths and os.path.isfile(row['path']) else unavailable).append((row['path'],))
     with db.lock:
-        cur = db.conn.execute(
-            "DELETE FROM models WHERE legacy_uid IS NULL AND path NOT IN "
-            "(SELECT path FROM files WHERE category='model')")
-        stats["pruned"] = cur.rowcount
+        db.conn.executemany("UPDATE models SET missing=1 WHERE path=?", unavailable)
+        db.conn.executemany("UPDATE models SET missing=0 WHERE path=?", available)
+        stats["pruned"] = 0
+        stats["unavailable_preserved"] = len(unavailable)
         db.conn.commit()
-    if stats["pruned"]:
-        report(f"清理失效模型行：{stats['pruned']} 个")
+    if unavailable:
+        report(f"本次扫描未覆盖的模型记录已保留：{len(unavailable)} 个，评分、备注与来源不删除")
     db.commit()
     return stats
 

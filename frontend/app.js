@@ -245,7 +245,7 @@
 
   // ---------- 路由 ----------
   const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "更新中心", analysis: "使用分析",
-    images: "出图图库", llm: "大模型", files: "文件总览", reports: "知识与报告", projects:"项目与运行", settings: "设置", organizer: "安全区整理" };
+    images: "出图图库", llm: "大模型", files: "文件总览", reports: "知识与报告", projects:"项目与运行", workspace:"工作环境", settings: "设置", organizer: "安全区整理" };
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
     const [page, qs] = h.split("?");
@@ -265,6 +265,7 @@
     if (activePage === 'files') state = { path: fileState.path, query: value('fs-q') };
     if (activePage === 'organizer') state = AIHubOrganizer.capture(view);
     if (activePage === 'projects') state = AIHubRegistry.capture(view);
+    if (activePage === 'workspace') state = AIHubWorkspace.capture(view);
     return {
       state, top: host.scrollTop, left: host.scrollLeft, search: $('#global-search').value,
       scrolls: scrollSelectors.map(selector => $$(selector, host).map(el => [el.scrollLeft, el.scrollTop])),
@@ -348,6 +349,7 @@
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
   pages.projects=AIHubRegistry.createProjects(registryEnv);
+  pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs});
 
   pages.overview = async el => {
     el.classList.add('overview-page');
@@ -362,6 +364,7 @@
       const metric=(label,value,foot,ic)=>`<div class="metric"><div class="metric-top">${label}<span class="metric-icon">${icon(ic,17)}</span></div><div class="metric-value">${String(value).replace(/ ([KMGT]iB|B)$/,'<small>$1</small>')}</div><div class="metric-foot">${foot}</div></div>`;
       const action=(ic,title,detail,page,query,tone='')=>`<div class="attention-row"><span class="attention-icon ${tone}">${icon(ic,17)}</span><div class="attention-content"><strong>${title}</strong><p>${detail}</p></div><button class="action" data-nav="${page}" data-query="${esc(query||'')}">查看 ${icon('arrow',13)}</button></div>`;
       el.innerHTML=heading('工作空间','模型、出图与资料，在同一处管理。','WORKSPACE OVERVIEW')+`
+      ${AIHubWorkspace.banner()}
       ${AIHubOrganizer.workspaceBanner(organizer)}
       <section class="workspace-banner" aria-label="常用工作入口"><div class="workspace-copy"><div class="workspace-caption">${icon('layers',14)} 创作资产工作台</div><h3>让每一次创作，都有迹可循。</h3><p>从合适的模型开始，连接工作流，回看你的出图记录。</p><div class="workspace-context">${icon('folder',15)}<b>${esc(ov.ai_root)}</b><span>本机工作空间</span></div></div><div class="workspace-actions"><button class="btn primary" data-nav="models">${icon('layers',15)} 浏览模型 ${icon('arrow',14)}</button><button class="btn" data-nav="images">${icon('image',15)} 打开图库</button><button class="btn ghost" data-nav="workflows">${icon('workflow',15)} 进入工作流</button></div></section>
       <div class="metric-grid">${metric('中央主模型',(ov.central_counts.Checkpoint||0)+(ov.central_counts.Diffusion||0),'当前索引 · Checkpoint / Diffusion','layers')}${metric('中央 LoRA',ov.central_counts.LoRA||0,'当前索引 · 架构、用途与训练信息','cpu')}${metric('文件占用',fmtSize(ov.unique_size),`扫描范围去重 · 可用 ${fmtSize(ov.disk.free)}`,'disk')}${metric('出图记录',ov.image_count.toLocaleString(),`其中 <em>${ov.image_with_meta}</em> 张包含生成元数据`,'image')}</div>
@@ -779,6 +782,7 @@
     el.innerHTML = `<div class="muted">加载中…</div>`;
     return api("/api/settings").then(c => {
       el.innerHTML = `
+        ${AIHubWorkspace.banner()}
         <section class="setup-banner organizer-settings-entry"><div><h3>安全区与自动分类</h3><p>换电脑后，从这里选择本机目录、预览分类入口并设置启动整理。</p></div><a class="btn" href="#/organizer">管理安全区 ${icon('arrow',14)}</a></section>
         <div class="panel"><h3>🌐 网络与更新源</h3><div class="body">
           <div class="form-row"><div class="k">Civitai API 地址</div><input class="inp" id="s-cbase" value="${esc(c.network.civitai_base)}"></div>

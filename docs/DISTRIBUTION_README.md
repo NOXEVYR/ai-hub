@@ -1,5 +1,17 @@
 # AI Hub
 
+[返回项目总览](https://github.com/turnsolesama/portfolio) · [仓库迁移说明](https://github.com/turnsolesama/ai-hub/blob/main/MIGRATION.md)
+
+![AI Hub 资产工作台](https://raw.githubusercontent.com/turnsolesama/portfolio/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/docs/assets/ai-hub.svg)
+
+**统一管理本地 AI 工作区、模型与资源库。** 创建或接入自己的目录，分配项目输入、过程、输出与交付位置，分类检索模型与 LoRA，并浏览出图库和运行记录。
+
+选用重点：整理跨项目复用的模型和资源，使用 AI Hub；围绕一个作品整理素材、文稿、分镜与制作进度，可查看 [映序](https://github.com/turnsolesama/yingxu)。
+
+[下载与启动](#获取与启动) · [常用功能](#常用功能) · [项目与验证登记](#项目与验证登记) · [数据与更新](#数据与更新) · [开发和构建](#开发和构建)
+
+2.6.0：新增工作环境、来源体检、项目目录与四工具规则交接；这些规则不等于系统硬隔离。[工作区说明](docs/WORKSPACE_2.6.md)。
+
 2.5.0：补齐项目与知识入口，统一分类、人工覆盖和工作流验证状态。[结构升级](docs/STRUCTURE_2.5.md)。
 
 2.4.1：采用新生成的叠层资产图标，统一 EXE、窗口、侧栏及 favicon。[图标方案](docs/BRAND_2.4.1.md)。
@@ -20,14 +32,18 @@ Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解�
 - [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 - `start.vbs` 为备用浏览器入口；`debug.bat` 用于需要控制台输出的诊断。
 
-首次使用：进入 **安全区整理**，选择本机资产目录；需要时创建标准目录，保存后预览自动分类结果并建立分类入口。已有模型库仅提供分类预览；便携散落资产区可选启动时自动整理。新安装没有预设他人的盘符，目录失效时会提示重新设置。详细规则见 [安全区与自动整理](docs/SAFE_ZONE.md)。
+首次使用：进入 **工作环境**，选择“新建工作环境”或“接入已有目录”，填写自己的根目录。先预览将创建的目录与规则，确认后保存，再开始索引。资产扫描来源和图库来源分开配置；可发现训练验证目录 `verify_out / samples`，数据集与缓存不进入图库。已有结构和 AGENTS.md 保留。需要分类入口时再使用 **安全区整理**。[工作区说明](docs/WORKSPACE_2.6.md)。
 
-当前发行版 **2.5.0**：[Windows 桌面包](https://raw.githubusercontent.com/turnsolesama/portfolio/main/ai-hub/releases/AI-Hub-v2.5.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/turnsolesama/portfolio/main/ai-hub/releases/AI-Hub-v2.5.0-Source.zip) · [SHA-256](https://github.com/turnsolesama/portfolio/blob/main/ai-hub/releases/AI-Hub-v2.5.0-SHA256.txt)。
+当前发行版 **2.6.0**：[Windows 桌面包](https://raw.githubusercontent.com/turnsolesama/ai-hub/main/releases/AI-Hub-v2.6.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/turnsolesama/ai-hub/main/releases/AI-Hub-v2.6.0-Source.zip) · [SHA-256](https://github.com/turnsolesama/ai-hub/blob/main/releases/AI-Hub-v2.6.0-SHA256.txt)。
+
+2.6.0 起源码和发行文件在独立仓库维护。迁移前的历史包继续保留在 portfolio，详情见 [迁移说明](https://github.com/turnsolesama/ai-hub/blob/main/MIGRATION.md)。
 
 ## 常用功能
 
 | 功能 | 使用方式 |
 | --- | --- |
+| 工作环境与项目 | 新建或接入根目录、来源体检、预览确认、创建 Inputs / Work / Outputs / Deliverables 与 AI 规则交接文件 |
+| 工具规则 | Codex、ZCode、DSH、WorkBuddy 能力提示与项目规则；不改现有会话，不自动启动，不代表已隔离 |
 | 安全区自动整理 | 跨电脑配置目录、创建规范结构、分类预览、硬链接入口、执行记录与撤销、可选启动自动整理 |
 | 按功能查模型 | 图片创作、视频制作、语言与对话、语音与音乐、视觉工具、通用组件、用途待确认 |
 | LoRA 用途 | 风格、角色、光照、细节、姿态构图、服饰、场景、动作运镜、加速等多选分类 |
@@ -40,6 +56,38 @@ Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解�
 Ctrl+K 聚焦全局模型搜索。返回记录保留在当前页面会话内，刷新页面会重新开始。引用次数来自已扫描图片的元数据，不代表模型质量或全部使用历史。
 
 分类规则、证据优先级与手动覆盖：[分类说明](docs/CLASSIFICATION.md)。功能分类不替代架构兼容检查，也不代表已验证生成效果。
+
+## 从目录到创作的四步
+
+1. **登记目录**：在“工作环境”选择自己的根目录及资产、图库来源，预览后保存并扫描。新项目先由 Hub 创建规范目录与任务交接文件，再在 AI 工具中明确打开该项目。
+2. **查找模型**：按图片、视频等用途缩小范围，再检查所属范围、模型角色与兼容架构。LoRA 可同时属于角色、风格、光照等用途。
+3. **补充自己的判断**：在详情中记录评分与备注，使用“调整分类”覆盖自动建议；需要统一整理时勾选列表后批量分类。
+4. **回看结果**：进入图库按模型引用筛选并查看大图；通过顶部返回按钮回到之前的筛选和位置。需要跟踪制作来源时登记项目与运行。
+
+### 两类目录如何配合
+
+| 目录 | 工作方式 | 需要了解 |
+| --- | --- | --- |
+| 原始模型与 LoRA | 扫描并登记原文件位置 | 功能分类不代表模型已与当前工作流兼容 |
+| 既有模型库 | 统一分类视图与人工覆盖 | 不生成第二棵分类库，不拆分模型包 |
+| 散落资产的分类入口 | 按预览和确认建立硬链接，可记录执行与撤销 | 共用同一份文件内容，编辑任一入口也会改变原件，不是第二份备份 |
+| 出图库 | 索引配置的出图目录，读取生成元数据 | 模型引用记录取决于元数据是否存在、是否已被扫描 |
+| 资料与工作流 | 登记说明、路径、依赖和验证证据 | 路径存在不代表工作流已经执行通过 |
+
+## 项目与验证登记
+
+2.5 增加“项目与运行”和“知识与报告”。登记只建立导航与引用，先预览、再保存，保留已有应用的内部结构，不自动创建或搬动项目资产目录。
+
+| 模块 | 可以记录什么 |
+| --- | --- |
+| 项目 | 创作 / 训练 / 工具类型、当前说明、资产位置、输出位置与唯一正式交付位置 |
+| 运行 | 项目归属、运行目录、工作流版本、模型、种子及验证状态 |
+| 知识 | 项目当前说明、指南和显式白名单中的知识正文，按组查找 |
+| 工作流证据 | 日期、工作流 SHA-256、依赖快照与输出证据 |
+
+“待验证、仅路径检查、历史执行通过、当前复验通过”分别表示不同证据水平。文件或证据发生变化时，界面重新计算有效状态，保留原登记，不继续显示当前通过。读取文件信息只采集版本与元数据，不会执行模型，也不自动填写通过结论。
+
+[完整结构说明](docs/STRUCTURE_2.5.md) · [项目、运行、工作流与知识登记格式](docs/REGISTRY.md) · [历史版本与下载](https://github.com/turnsolesama/portfolio/blob/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/ai-hub/releases/README.md)
 
 ## 数据与更新
 
@@ -77,4 +125,4 @@ python -B tools/package_release.py --exe "AI Hub.exe" --output releases
 
 ## 2.5 分类与项目登记
 
-应用与前端版本为 2.5.0；桌面壳沿用 2.4.1（本次未修改桌面功能）。新增项目、知识、运行登记与四级工作流证据状态，详见 [结构升级说明](docs/STRUCTURE_2.5.md) 和 [登记格式](docs/REGISTRY.md)。
+2.5.0 当时引入以下分类与登记；桌面壳沿用 2.4.1（本次未修改桌面功能）。新增项目、知识、运行登记与四级工作流证据状态，详见 [结构升级说明](docs/STRUCTURE_2.5.md) 和 [登记格式](docs/REGISTRY.md)。

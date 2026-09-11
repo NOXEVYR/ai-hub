@@ -15,6 +15,8 @@ from . import updater as upd
 from . import management
 from . import classification
 from . import images as image_store, meta, recycle
+from . import workspace as workspace_manager
+from . import projects as project_manager, tool_adapters
 from .db import jload
 
 _started = time.time()
@@ -123,6 +125,41 @@ APP_CFG = {}
 
 # ---------- 路由 ----------
 
+def _source_scope(cfg, kind='scan', column='path'):
+    """Limit managed views without deleting records from previous sources."""
+    if cfg.get('workspace_managed') is not True:
+        return '1=1', []
+    terms, args, candidates = [], [], set()
+    root = cfg.get('ai_root') or ''
+    for source in cfg.get(kind + '_roots') or []:
+        if not cfgmod.scan_root_allowed(source, cfg) or not cfgmod._within(source, root):
+            continue
+        canonical = os.path.realpath(source).rstrip('\\/')
+        candidates.add(canonical)
+        # Existing model records may use a registered compatibility junction.
+        # Keep those annotations visible only while its live target is within
+        # a selected source. Scanners still refuse traversal through junctions.
+        if kind == 'scan':
+            for alias in cfg.get('aliases') or {}:
+                if not os.path.isdir(alias):
+                    continue
+                target = os.path.realpath(alias)
+                if cfgmod._within(target, canonical):
+                    candidates.add(os.path.abspath(alias).rstrip('\\/'))
+                elif cfgmod._within(canonical, target):
+                    candidates.add(os.path.join(alias, os.path.relpath(canonical, target)).rstrip('\\/'))
+    for canonical in sorted(candidates):
+        prefix = canonical + os.sep
+        terms.append(f'({column}=? COLLATE NOCASE OR substr({column},1,?)=? COLLATE NOCASE)')
+        args.extend([canonical, len(prefix), prefix])
+    return '(' + ' OR '.join(terms) + ')' if terms else '0=1', args
+
+
+def _scoped_models(db, cfg):
+    scope, args = _source_scope(cfg)
+    return db.query('SELECT * FROM models WHERE ' + scope, args)
+
+
 def overview(db, cfg, params, body):
     parts = []
     roots = cfg.get("scan_roots") or []
@@ -143,20 +180,22 @@ def overview(db, cfg, params, body):
     total_size = sum(p["size"] for p in parts)
     total_files = sum(p["files"] for p in parts)
 
+    model_scope, model_args = _source_scope(cfg)
+    image_scope, image_args = _source_scope(cfg, 'output')
     state_counts = {r["update_state"]: r["c"] for r in
-                    db.query("SELECT update_state, COUNT(*) c FROM models GROUP BY update_state")}
-    img_stats = db.one("SELECT COUNT(*) n, SUM(has_meta) m FROM images")
+                    db.query("SELECT update_state, COUNT(*) c FROM models WHERE " + model_scope + " GROUP BY update_state", model_args)}
+    img_stats = db.one("SELECT COUNT(*) n, SUM(has_meta) m FROM images WHERE " + image_scope, image_args)
     ref_stats = db.one("SELECT COUNT(DISTINCT model_path) models, COUNT(*) refs "
                        "FROM img_refs WHERE model_path IS NOT NULL")
     ghost = jload(db.get_meta("ghost_refs"), [])
     disk_root = cfg.get("ai_root") or cfgmod.APP_DIR
     disk = shutil.disk_usage(disk_root if os.path.isdir(disk_root) else cfgmod.APP_DIR)
     top_used = [ _row_json(r) for r in db.query(
-        "SELECT * FROM models WHERE img_count > 0 ORDER BY img_count DESC LIMIT 8")]
+        "SELECT * FROM models WHERE img_count > 0 AND " + model_scope + " ORDER BY img_count DESC LIMIT 8", model_args)]
     recent = [_row_json(r) for r in db.query(
-        "SELECT * FROM models WHERE missing=0 ORDER BY mtime DESC LIMIT 8")]
-    pending = db.one("SELECT COUNT(*) c FROM models WHERE update_state IN ('available','maybe')")["c"]
-    all_models = db.query("SELECT * FROM models")
+        "SELECT * FROM models WHERE missing=0 AND " + model_scope + " ORDER BY mtime DESC LIMIT 8", model_args)]
+    pending = db.one("SELECT COUNT(*) c FROM models WHERE update_state IN ('available','maybe') AND " + model_scope, model_args)["c"]
+    all_models = _scoped_models(db, cfg)
     categories = classification.decorate(all_models, management.catalog(cfg), db.query("SELECT * FROM model_labels"))
     distinct = classification.deduplicate_models(all_models)
     mtype_counts = collections.Counter(categories[r['rowid_pk']]['model_role'] for r in distinct)
@@ -198,7 +237,8 @@ def models_list(db, cfg, params, body):
         return _err("未知的功能分类")
     if purpose and purpose not in classification.PURPOSES:
         return _err("未知的 LoRA 用途")
-    conds, args = [], []
+    scope, args = _source_scope(cfg)
+    conds = [scope]
     if _q(params, "ids") is not None:
         ids = [int(value) for value in str(_q(params, "ids")).split(",") if value.isdigit()][:500]
         conds.append("rowid_pk IN (" + ",".join("?" for _ in ids) + ")" if ids else "0=1")
@@ -226,7 +266,7 @@ def models_list(db, cfg, params, body):
     order = sort_map.get(_q(params, "sort") or "", "mtime DESC")
     page = max(1, _int(_q(params, "page"), 1))
     size = min(200, max(10, _int(_q(params, "size"), 50)))
-    all_rows = db.query("SELECT * FROM models")
+    all_rows = _scoped_models(db, cfg)
     categories = classification.decorate(all_rows, management.catalog(cfg), db.query("SELECT * FROM model_labels"))
     rows = db.query(f"SELECT * FROM models {where} ORDER BY {order}, rowid_pk", args)
     kind = _q(params, "kind")
@@ -287,7 +327,8 @@ def _find_preview(path: str):
 
 def model_detail(db, cfg, params, body):
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    scope, args = _source_scope(cfg)
+    row = db.one("SELECT * FROM models WHERE rowid_pk=? AND " + scope, [mid] + args)
     if not row:
         return _err("model not found", 404)
     d = _row_json(row)
@@ -455,7 +496,8 @@ def check_updates_start(db, cfg, params, body):
 
 
 def images_list(db, cfg, params, body):
-    conds, args = [], []
+    scope, scope_args = _source_scope(cfg, 'output', 'i.path')
+    conds, args = [scope], list(scope_args)
     q = _q(params, "q")
     if q:
         conds.append("(i.name LIKE ? OR IFNULL(i.prompt,'') LIKE ?)")
@@ -486,7 +528,7 @@ def images_list(db, cfg, params, body):
         item["others"] = jload(item.get("others"), [])
         item["model_refs"] = jload(item.get("model_refs"), [])
         items.append(item)
-    dirs = [r["parent"] for r in db.query("SELECT DISTINCT parent FROM images LIMIT 400")]
+    dirs = [r["parent"] for r in db.query("SELECT DISTINCT parent FROM images i WHERE " + scope + " LIMIT 400", scope_args)]
     return _json_bytes({"total": total, "page": page, "size": size, "items": items, "dirs": dirs})
 
 
@@ -555,7 +597,7 @@ def usage_ranking(db, cfg, params, body):
 
 
 def _classified_rows(db,cfg):
-    rows = db.query('SELECT * FROM models')
+    rows = _scoped_models(db, cfg)
     categories = classification.decorate(rows,management.catalog(cfg),db.query('SELECT * FROM model_labels'))
     return [{**_row_json(row),'classification':categories[row['rowid_pk']]} for row in classification.deduplicate_models(rows)]
 
@@ -716,6 +758,63 @@ def settings_post(db, cfg, params, body):
         except (ValueError, OSError) as e:
             return _err(str(e))
         return _json_bytes({"ok": True})
+
+
+def workspace_environment_status(db, cfg, params, body):
+    result = workspace_manager.status(cfg)
+    result['tools'] = tool_adapters.status(cfg)
+    result['scan_at'] = db.get_meta('scan_at')
+    result['image_scan_at'] = db.get_meta('image_scan_at')
+    result['busy'] = organization.busy()
+    return _json_bytes(result)
+
+
+def workspace_environment_action(db, cfg, params, body):
+    if not isinstance(body, dict):
+        return _err('工作环境请求必须是对象')
+    action = _q(params, 'action')
+    if 'scan' in body and type(body['scan']) is not bool:
+        return _err('开始索引参数须为布尔值')
+    with organization.LOCK:
+        try:
+            if action == 'preview':
+                return _json_bytes(workspace_manager.preview(cfg, body))
+            if action != 'apply':
+                return _err('未知工作环境操作')
+            if organization.busy():
+                return _err('扫描或整理期间不能切换工作环境', 409)
+            result = workspace_manager.apply(cfg, body.get('token'))
+            if APP_CFG is not cfg:
+                APP_CFG.clear()
+                APP_CFG.update(cfg)
+            result['scan_started'] = False
+            if body.get('scan'):
+                jobs.run_full_pipeline(db, cfg)
+                result['scan_started'] = True
+            return _json_bytes(result)
+        except (ValueError, OSError) as error:
+            return _err(str(error))
+
+
+def workspace_project_action(db, cfg, params, body):
+    if not isinstance(body, dict):
+        return _err('项目请求必须是对象')
+    action = _q(params, 'action')
+    with organization.LOCK:
+        try:
+            if action == 'preview':
+                return _json_bytes(project_manager.preview(cfg, body))
+            if action != 'apply' or set(body) != {'token'}:
+                return _err('项目确认请求字段不合法')
+            if organization.busy():
+                return _err('扫描或整理期间不能创建项目工作区', 409)
+            result = project_manager.apply(cfg, body['token'])
+            if APP_CFG is not cfg:
+                APP_CFG.clear()
+                APP_CFG.update(cfg)
+            return _json_bytes(result)
+        except (ValueError, OSError) as error:
+            return _err(str(error))
 
 
 def workspace_setup(db, cfg, params, body):
@@ -933,6 +1032,9 @@ def registry_request(db, cfg, params, body):
 
 
 ROUTES = [
+    ("GET", r"^/api/workspace/status$", workspace_environment_status),
+    ("POST", r"^/api/workspace/(?P<action>preview|apply)$", workspace_environment_action),
+    ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
     ("GET", r"^/api/projects$", lambda db, cfg, params, body: _json_bytes(management.projects(cfg))),
     ("GET", r"^/api/registry$", lambda db, cfg, params, body: _json_bytes(management.registry_snapshot(cfg))),
     ("GET", r"^/api/registry/backups$", lambda db, cfg, params, body: _json_bytes(management.registration_backups(cfg))),
@@ -941,7 +1043,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.5.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.6.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),

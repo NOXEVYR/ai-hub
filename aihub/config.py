@@ -128,36 +128,59 @@ def detect_layout(ai_root, ignore_dirs=None):
     return result
 
 
-def detect_output_roots(roots, ignore_dirs=None):
-    """Bounded, link-free discovery supporting numbered, legacy and ComfyUI layouts."""
+OUTPUT_EXCLUDED_NAMES = {'dataset', 'datasets', 'training_data', 'train_data', '训练数据', '训练集',
+                         'cache', 'caches', 'app_data', 'data', 'backups', 'backup', 'configs',
+                         'credentials', 'secrets', 'private', 'profiles', 'webview2', 'runtime',
+                         'python_embeded', 'python_embedded', 'site-packages'}
+OUTPUT_NAMES = {'output', 'outputs', '70_output', 'ai_output', 'verify_out', 'verification_output',
+                'samples', 'sample', 'validation_images', 'validation_outputs', '出图', '输出'}
+
+
+def output_path_excluded(path, root):
+    """Exclude datasets and application internals even when selected directly."""
+    if not _within(path, root):
+        return True
+    relative = os.path.relpath(path, root).replace('\\', '/').split('/')
+    return any(part.casefold() in OUTPUT_EXCLUDED_NAMES or (part != '.' and part.startswith('.')) for part in relative)
+
+
+def discover_output_roots(roots, ignore_dirs=None, max_entries=20000, max_depth=12):
+    """Metadata-only suggestions; every directory entry consumes the shared budget."""
     found, seen, visited = [], set(), set()
     guard = {'ignore_dirs': list(DEFAULT_IGNORE_DIRS if ignore_dirs is None else ignore_dirs)}
-    budget = 5000
+    examined, truncated = 0, False
     for candidate in list(roots or []):
         try:
             root = validate_asset_root(candidate)
         except (OSError, ValueError):
             continue
         stack = [(root, 0)]
-        while stack and budget > 0:
+        while stack and examined < max_entries:
             current, depth = stack.pop()
             key = _key(current)
-            if key in visited or scan_excluded(current, guard):
+            if key in visited or scan_excluded(current, guard) or output_path_excluded(current, root):
                 continue
             visited.add(key)
-            budget -= 1
             base = os.path.basename(current).casefold()
-            if 'output' in base or '输出' in base:
+            if base in OUTPUT_EXCLUDED_NAMES:
+                continue
+            # samples/verify_out are explicit validation folders, not all training images.
+            if base in OUTPUT_NAMES or base.startswith(('output_', 'outputs_')):
                 if key not in seen:
-                    found.append(current)
+                    found.append({'path': current, 'reason': '训练或验证样图目录' if base in {'samples', 'sample', 'verify_out', 'validation_images', 'validation_outputs'} else '明确输出目录'})
                     seen.add(key)
                 continue
-            if depth >= 5:
+            if depth >= max_depth:
+                truncated = True
                 continue
             try:
                 with os.scandir(current) as entries:
                     children = []
                     for entry in entries:
+                        examined += 1
+                        if examined > max_entries:
+                            truncated = True
+                            break
                         try:
                             st = entry.stat(follow_symlinks=False)
                             if stat.S_ISDIR(st.st_mode) and not _is_reparse(st):
@@ -167,7 +190,15 @@ def detect_output_roots(roots, ignore_dirs=None):
                 stack.extend((p, depth + 1) for p in sorted(children, key=str.casefold, reverse=True))
             except OSError:
                 continue
-    return sorted(found, key=str.casefold)
+        if stack:
+            truncated = True
+    return {'items': sorted(found, key=lambda row: row['path'].casefold()),
+            'examined': min(examined, max_entries), 'truncated': truncated}
+
+
+def detect_output_roots(roots, ignore_dirs=None):
+    """Compatibility list API; discovery never saves configuration."""
+    return [row['path'] for row in discover_output_roots(roots, ignore_dirs)['items']]
 
 
 def initialize_root(root):

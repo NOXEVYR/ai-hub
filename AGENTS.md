@@ -15,3 +15,6 @@
 
 - 2.5 分类四维由 classification.py 共用；登记/证据协议见 docs/REGISTRY.md。修改登记须预览、备份、并发校验，工作流界面使用 verification_state，运行使用 effective_validation_status。数据迁移使用 SQLite backup API 且可回退；不得通过推断状态宣称当前执行通过。
 - 同文件别名只能按有效文件身份合并；历史路径已指向其他文件时不得传播人工标签。已有模型库采用只读统一预览，不创建第二棵实体入口树。
+
+- 工作环境与项目创建须先预览、再确认；令牌绑定配置与目录身份，冲突不覆盖，失败仅回退自己新增且未改变的文件/空目录。来源切换保留旧模型评分、备注与标签；显式空来源不得回退成全根扫描。
+- 工具规则接入见 docs/WORKSPACE_2.6.md。Codex/ZCode/DSH 使用 AGENTS.md，WorkBuddy 使用 CODEBUDDY.md。探测入口、生成规则与实际系统隔离是不同状态；不通过固定作者盘符探测，不伪称外部工具已被隔离。

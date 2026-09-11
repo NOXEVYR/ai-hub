@@ -57,17 +57,22 @@ def _run_image_scan(db, cfg, progress_cb=None):
     for root in out_roots:
         if not cfgmod.scan_root_allowed(root, cfg):
             continue
+        if (os.path.basename(os.path.normpath(root)).casefold() in cfgmod.OUTPUT_EXCLUDED_NAMES
+                or (cfg.get('ai_root') and cfgmod._within(root, cfg['ai_root'])
+                    and cfgmod.output_path_excluded(root, cfg['ai_root']))):
+            continue
         root = os.path.realpath(root)
         if not os.path.isdir(root):
             continue
         for dp, _dns, fns in os.walk(root):
-            _dns[:] = [name for name in _dns if not cfgmod.scan_excluded(os.path.join(dp, name), cfg)]
+            _dns[:] = [name for name in _dns if not cfgmod.scan_excluded(os.path.join(dp, name), cfg)
+                       and not cfgmod.output_path_excluded(os.path.join(dp, name), root)]
             for fn in fns:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext not in meta.IMAGE_EXTS:
                     continue
                 path = os.path.join(dp, fn)
-                if cfgmod.scan_excluded(path, cfg):
+                if cfgmod.scan_excluded(path, cfg) or cfgmod.output_path_excluded(path, root):
                     continue
                 if os.path.normcase(path) in visited:
                     continue
