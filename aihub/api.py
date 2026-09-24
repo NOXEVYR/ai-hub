@@ -2,12 +2,15 @@
 """HTTP API 路由。所有 /api/* 由 dispatch() 处理。"""
 import json
 import collections
+import copy
 import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import time
 import urllib.parse
+import uuid
 
 from . import config as cfgmod
 from . import jobs, organization, organizer
@@ -888,7 +891,10 @@ def organizer_action(db, cfg, params, body):
 
 
 def report_generate(db, cfg, params, body):
-    """生成当前盘点 Markdown 报告到 data/reports。"""
+    """Write new managed reports centrally; preserve earlier local reports."""
+    cfg = copy.deepcopy(cfg)
+    folder = management.generated_report_dir(cfg, cfgmod.REPORTS_DIR)
+    cfgmod._check_ancestors(str(folder))
     ov = json.loads(overview(db, cfg, {}, body)[2].decode("utf-8"))
     now = time.strftime("%Y-%m-%d %H:%M")
     lines = [f"# AI Hub 盘点报告 · {now}", "",
@@ -919,9 +925,11 @@ def report_generate(db, cfg, params, body):
     lines += ["", "## 更新状态分布", ""]
     for k, v in ov["state_counts"].items():
         lines.append(f"- {k}: {v}")
-    name = f"盘点报告_{time.strftime('%Y%m%d_%H%M')}.md"
-    path = os.path.join(cfgmod.REPORTS_DIR, name)
-    with open(path, "w", encoding="utf-8") as f:
+    name = f"盘点报告_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.md"
+    os.makedirs(folder, exist_ok=True)
+    cfgmod._check_ancestors(str(folder))
+    path = os.path.join(folder, name)
+    with open(path, "x", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return _json_bytes({"ok": True, "name": name, "path": path})
 
@@ -1043,7 +1051,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.6.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.7.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),
@@ -1077,6 +1085,29 @@ ROUTES = [
 
 
 def dispatch(db, cfg, method, path, params, body):
+    # Collaboration has its own root-partitioned store; never changes model data.
+    if path == '/api/collaboration/status' and method == 'GET':
+        from . import collaboration_api
+        try:
+            return _json_bytes(collaboration_api.status(cfg))
+        except (ValueError, OSError) as error:
+            return _err(str(error), 400)
+        except sqlite3.Error:
+            return _err('协作存储暂时不可用，请稍后重试；没有确认完成本次操作。', 503)
+    match = re.fullmatch(r'/api/collaboration/(mcp/)?([a-z_]+)', path)
+    if match and method == 'POST':
+        from . import collaboration_api
+        try:
+            return _json_bytes(collaboration_api.execute(cfg, match[2], body,
+                               actor='mcp' if match[1] else 'ui'))
+        except PermissionError as error:
+            return _err(str(error), 403)
+        except (ValueError, TypeError) as error:
+            return _err(str(error), 400)
+        except OSError as error:
+            return _err(str(error), 409)
+        except sqlite3.Error:
+            return _err('协作存储暂时不可用，请稍后重试；没有确认完成本次操作。', 503)
     for m, rx, fn in ROUTES:
         match = re.match(rx, path)
         if match and m == method:

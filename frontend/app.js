@@ -245,7 +245,7 @@
 
   // ---------- 路由 ----------
   const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "更新中心", analysis: "使用分析",
-    images: "出图图库", llm: "大模型", files: "文件总览", reports: "知识与报告", projects:"项目与运行", workspace:"工作环境", settings: "设置", organizer: "安全区整理" };
+    images: "出图图库", llm: "大模型", files: "文件总览", reports: "知识与报告", projects:"项目与运行", workspace:"工作环境", collaboration:"协作与记忆", settings: "设置", organizer: "安全区整理" };
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
     const [page, qs] = h.split("?");
@@ -266,6 +266,7 @@
     if (activePage === 'organizer') state = AIHubOrganizer.capture(view);
     if (activePage === 'projects') state = AIHubRegistry.capture(view);
     if (activePage === 'workspace') state = AIHubWorkspace.capture(view);
+    if (activePage === 'collaboration') state = AIHubCollaboration.capture(view);
     return {
       state, top: host.scrollTop, left: host.scrollLeft, search: $('#global-search').value,
       scrolls: scrollSelectors.map(selector => $$(selector, host).map(el => [el.scrollLeft, el.scrollTop])),
@@ -350,6 +351,7 @@
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
   pages.projects=AIHubRegistry.createProjects(registryEnv);
   pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs});
+  pages.collaboration=AIHubCollaboration.createPage({api,heading});
 
   pages.overview = async el => {
     el.classList.add('overview-page');
@@ -850,6 +852,8 @@
   $$('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));
   $('#menu-toggle').onclick=()=>{const open=document.body.classList.toggle('nav-open');$('#menu-toggle').setAttribute('aria-expanded',String(open));};
   document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#global-search').focus();$('#global-search').select();}});
+  AIHubContextMenu.install({document, window, api, openDetails: openModelDrawer,
+    clipboard: navigator.clipboard, toast});
   pollJobs();
   navigation.start();
 })();

@@ -32,7 +32,7 @@ CFG = {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIHub/2.6.0"
+    server_version = "AIHub/2.7.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -132,10 +132,17 @@ def cmd_serve(args):
     print(f"[AI Hub] 服务已启动: {url}  (Ctrl+C 退出)")
     if args.open:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    from aihub import collaboration_maintenance
+    maintenance_worker = None if getattr(args, "no_initial_scan", False) else collaboration_maintenance.start_scheduler(CFG)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[AI Hub] 已退出")
+    finally:
+        if maintenance_worker:
+            maintenance_worker[0].set()
+            maintenance_worker[1].join(timeout=3)
+        httpd.server_close()
 
 
 def cmd_scan(args):

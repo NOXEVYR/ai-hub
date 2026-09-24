@@ -265,9 +265,21 @@ def workflows(cfg):
             'coverage': '验证结论来自逐工作流登记；路径检查、历史执行和当前证据匹配分开显示。'}
 
 
+def generated_report_dir(cfg, legacy_dir):
+    """Choose a validated workspace destination without creating or moving files."""
+    if cfg.get('workspace_managed') is not True:
+        return Path(legacy_dir)
+    asset_root = config.validate_asset_root(cfg.get('ai_root'))
+    destination = Path(asset_root) / '00_Management' / 'Reports' / 'AIHub'
+    # Validate the spelling before resolution so junctions cannot redirect writes.
+    config._check_ancestors(str(destination))
+    return destination
+
+
 def reports(cfg, generated_dir):
     base = root(cfg)
     locations = [(base, '工作入口'), (base / 'Reports', '模型与 LoRA'), (Path(generated_dir), '终端生成报告'),
+                 (generated_report_dir(cfg, generated_dir), '工作环境 · 终端生成报告'),
                  (base.parent / '80_Knowledge/Guides', '知识 · 指南')]
     locations += [(path, '项目 · ' + path.name) for path in _project_dirs(base / 'Projects')]
     result = {}

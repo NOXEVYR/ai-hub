@@ -1,12 +1,14 @@
 # AI Hub
 
-[返回项目总览](https://github.com/turnsolesama/portfolio) · [仓库迁移说明](https://github.com/turnsolesama/ai-hub/blob/main/MIGRATION.md)
+2.7.0 源码更新新增协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。源码通过 PR 审核同步；2.7.0 正式下载包尚未发布，下方 2.6.0 仍是现有公开下载，不包含本次新增功能。
 
-![AI Hub 资产工作台](https://raw.githubusercontent.com/turnsolesama/portfolio/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/docs/assets/ai-hub.svg)
+[返回项目总览](https://github.com/NOXEVYR/portfolio) · [仓库迁移说明](https://github.com/NOXEVYR/ai-hub/blob/main/MIGRATION.md)
+
+![AI Hub 资产工作台](https://raw.githubusercontent.com/NOXEVYR/portfolio/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/docs/assets/ai-hub.svg)
 
 **统一管理本地 AI 工作区、模型与资源库。** 创建或接入自己的目录，分配项目输入、过程、输出与交付位置，分类检索模型与 LoRA，并浏览出图库和运行记录。
 
-选用重点：整理跨项目复用的模型和资源，使用 AI Hub；围绕一个作品整理素材、文稿、分镜与制作进度，可查看 [映序](https://github.com/turnsolesama/yingxu)。
+选用重点：整理跨项目复用的模型和资源，使用 AI Hub；围绕一个作品整理素材、文稿、分镜与制作进度，可查看 [映序](https://github.com/NOXEVYR/yingxu)。
 
 [下载与启动](#获取与启动) · [常用功能](#常用功能) · [项目与验证登记](#项目与验证登记) · [数据与更新](#数据与更新) · [开发和构建](#开发和构建)
 
@@ -28,15 +30,17 @@ Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解�
 
 运行条件：Windows x64、.NET Framework 4.8+、本机 Python 3.9+、Microsoft Edge WebView2 Runtime。桌面包不捆绑 Python 和 WebView2 Runtime，也不包含模型权重。程序会查找已安装的 Python；也支持将可用解释器放到 `runtime/python.exe`。
 
+2.7.0 协作接入另需：MCP 适配器使用 Python 3.10+；接入配置助手 `tools/configure_harness_mcp.py` 使用 Python 3.11+，其中 Codex 配置校验依赖标准库 `tomllib`。这些要求与主程序的 Python 3.9+ 下限分别适用。
+
 - [Python 官方 Windows 下载](https://www.python.org/downloads/windows/)
 - [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 - `start.vbs` 为备用浏览器入口；`debug.bat` 用于需要控制台输出的诊断。
 
 首次使用：进入 **工作环境**，选择“新建工作环境”或“接入已有目录”，填写自己的根目录。先预览将创建的目录与规则，确认后保存，再开始索引。资产扫描来源和图库来源分开配置；可发现训练验证目录 `verify_out / samples`，数据集与缓存不进入图库。已有结构和 AGENTS.md 保留。需要分类入口时再使用 **安全区整理**。[工作区说明](docs/WORKSPACE_2.6.md)。
 
-当前发行版 **2.6.0**：[Windows 桌面包](https://raw.githubusercontent.com/turnsolesama/ai-hub/main/releases/AI-Hub-v2.6.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/turnsolesama/ai-hub/main/releases/AI-Hub-v2.6.0-Source.zip) · [SHA-256](https://github.com/turnsolesama/ai-hub/blob/main/releases/AI-Hub-v2.6.0-SHA256.txt)。
+此前公开发行版 **2.6.0**：[Windows 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/main/releases/AI-Hub-v2.6.0-SHA256.txt)。
 
-2.6.0 起源码和发行文件在独立仓库维护。迁移前的历史包继续保留在 portfolio，详情见 [迁移说明](https://github.com/turnsolesama/ai-hub/blob/main/MIGRATION.md)。
+2.6.0 起源码和发行文件在独立仓库维护。迁移前的历史包继续保留在 portfolio，详情见 [迁移说明](https://github.com/NOXEVYR/ai-hub/blob/main/MIGRATION.md)。
 
 ## 常用功能
 
@@ -87,7 +91,7 @@ Ctrl+K 聚焦全局模型搜索。返回记录保留在当前页面会话内，�
 
 “待验证、仅路径检查、历史执行通过、当前复验通过”分别表示不同证据水平。文件或证据发生变化时，界面重新计算有效状态，保留原登记，不继续显示当前通过。读取文件信息只采集版本与元数据，不会执行模型，也不自动填写通过结论。
 
-[完整结构说明](docs/STRUCTURE_2.5.md) · [项目、运行、工作流与知识登记格式](docs/REGISTRY.md) · [历史版本与下载](https://github.com/turnsolesama/portfolio/blob/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/ai-hub/releases/README.md)
+[完整结构说明](docs/STRUCTURE_2.5.md) · [项目、运行、工作流与知识登记格式](docs/REGISTRY.md) · [历史版本与下载](https://github.com/NOXEVYR/portfolio/blob/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/ai-hub/releases/README.md)
 
 ## 数据与更新
 
