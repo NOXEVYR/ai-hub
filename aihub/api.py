@@ -1039,7 +1039,90 @@ def registry_request(db, cfg, params, body):
             return _err(str(error))
 
 
+def workcenter_request(db, cfg, params, body):
+    from . import workcenter
+    import copy
+    action = _q(params, 'action')
+    try:
+        if action in {'classify', 'reveal'}:
+            if not isinstance(body, dict):
+                return _err('工作中心请求必须是对象')
+            with organization.LOCK:
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                payload = {k: v for k, v in body.items() if k != '_workspace_root'}
+                if action == 'classify':
+                    return _json_bytes(workcenter.classify(cfg, payload))
+                if set(payload) != {'document_id'}:
+                    return _err('打开目录请求字段不合法')
+                path = workcenter.resolve_document(cfg, payload['document_id'])
+                import subprocess
+                subprocess.Popen(['explorer.exe', '/select,', str(path)])
+                return _json_bytes({'ok': True})
+        snapshot = copy.deepcopy(cfg)
+        query = {k: _q(params, k) for k in params if k != 'action'}
+        if action == 'documents':
+            result = workcenter.list_documents(snapshot, query)
+        elif action == 'projects':
+            result = workcenter.list_projects(snapshot, query)
+        elif action == 'document':
+            ident = query.get('id')
+            if not ident and query.get('path'):
+                found = workcenter.lookup_document(snapshot, query['path'])
+                ident = found['id'] if isinstance(found, dict) else found
+            result = workcenter.read_document(snapshot, ident)
+        else:
+            return _err('未知工作中心操作', 404)
+        return _json_bytes({**result, 'workspace_root': snapshot.get('ai_root', ''), 'root': snapshot.get('ai_root', '')})
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('工作索引暂时不可用，已有文件未修改。', 503)
+
+
+def capabilities_request(db, cfg, params, body):
+    from . import capabilities
+    import copy
+    action = _q(params, 'action')
+    try:
+        if action == 'dispatch':
+            if not isinstance(body, dict):
+                return _err('能力调度请求必须是对象')
+            with organization.LOCK:
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                result = capabilities.execute(cfg, 'capability_dispatch',
+                    {k: v for k, v in body.items() if k != '_workspace_root'}, actor='ui')
+                response_root = cfg.get('ai_root', '')
+        else:
+            snapshot = copy.deepcopy(cfg)
+            payload = body if action == 'recommend' else {k: _q(params, k) for k in params if k != 'action'}
+            if not isinstance(payload, dict):
+                return _err('能力请求必须是对象')
+            result = capabilities.execute(snapshot, 'capability_' + action, payload, actor='ui')
+            response_root = snapshot.get('ai_root', '')
+        return _json_bytes({**result, 'workspace_root': response_root, 'root': response_root})
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('能力目录暂时不可用，未确认创建调度任务。', 503)
+
+
 ROUTES = [
+    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document)$', workcenter_request),
+    ('POST', r'^/api/workcenter/(?P<action>classify|reveal)$', workcenter_request),
+    ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
+    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch)$', capabilities_request),
     ("GET", r"^/api/workspace/status$", workspace_environment_status),
     ("POST", r"^/api/workspace/(?P<action>preview|apply)$", workspace_environment_action),
     ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
@@ -1051,7 +1134,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.7.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.9.0", "desktop_shell_version": "2.9.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),

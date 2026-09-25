@@ -7,9 +7,10 @@ from . import collaboration, collaboration_maintenance as maintenance, config
 
 MAINTENANCE_ACTIONS = {'source_list', 'source_candidates', 'source_inventory', 'source_add',
                        'source_scan', 'retention_preview', 'retention_policy', 'retention_run'}
+CAPABILITY_ACTIONS = {'capability_publish', 'capability_list', 'capability_recommend', 'capability_dispatch'}
 MCP_ACTIONS = {'client_heartbeat', 'task_create', 'task_list', 'task_claim', 'task_finish',
                'task_handoff', 'artifact_write', 'artifact_register', 'artifact_list',
-               'memory_propose', 'memory_search', 'retention_preview', 'source_list'}
+               'memory_propose', 'memory_search', 'retention_preview', 'source_list'} | CAPABILITY_ACTIONS
 
 
 def integration_config(cfg, tool='codex'):
@@ -49,8 +50,13 @@ def execute(cfg, action, body, actor='ui'):
         raise ValueError('工作环境已切换，请刷新协作页面后重新操作。')
     if actor == 'mcp' and action not in MCP_ACTIONS:
         raise PermissionError('MCP 接口不允许审核长期记忆、改变来源或执行清理。')
-    if action in MAINTENANCE_ACTIONS:
-        return maintenance.execute(cfg, action, body, actor)
-    effective = dict(cfg)
-    effective['collaboration_retention_days'] = maintenance.policy(cfg)['days']
-    return collaboration.execute(effective, action, body, actor=actor)
+    if action in CAPABILITY_ACTIONS:
+        from . import capabilities
+        result = capabilities.execute(cfg, action, body, actor)
+    elif action in MAINTENANCE_ACTIONS:
+        result = maintenance.execute(cfg, action, body, actor)
+    else:
+        effective = dict(cfg)
+        effective['collaboration_retention_days'] = maintenance.policy(cfg)['days']
+        result = collaboration.execute(effective, action, body, actor=actor)
+    return {**result, 'workspace_root': cfg.get('ai_root', '')}

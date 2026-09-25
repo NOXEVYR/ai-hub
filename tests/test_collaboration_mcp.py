@@ -37,6 +37,7 @@ class Handler(BaseHTTPRequestHandler):
             result = {'items': [{'status': 'approved', 'content': '用户审核的长期记忆'}]}
         else:
             result = {'ok': True, 'received': data}
+        result['workspace_root'] = 'C:/fixture/AI'
         self.send_response(self.server.reply_status)
         if self.server.reply_status == 302:
             self.send_header('Location', 'http://example.invalid/leak')
@@ -125,6 +126,24 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(out[5]['error']['code'], -32002)
         self.assertEqual([path for path, _ in self.server.calls],
                          ['/api/collaboration/mcp/client_heartbeat', '/api/collaboration/mcp/memory_search'])
+
+    def test_capability_tools_discover_and_route_without_exposing_identity_override(self):
+        manifest = json.dumps([{'key': 'demo', 'name': '图片接口', 'kind': 'mcp_tool'}], ensure_ascii=False)
+        out, err = self.run_stdio([*initialization(), request(2, 'tools/list'),
+            request(3, 'tools/call', {'name': 'aihub_capability_publish', 'arguments': {'capabilities_json': manifest}}),
+            request(4, 'tools/call', {'name': 'aihub_capability_recommend', 'arguments': {'query': '生成图片', 'domain': 'image'}}),
+            request(5, 'tools/call', {'name': 'aihub_capability_dispatch', 'arguments': {
+                'capability_id': 'demo', 'project': '演示', 'title': '任务', 'input_json': '{"prompt":"test"}'}}),
+            request(6, 'tools/call', {'name': 'aihub_capability_publish', 'arguments': {'capabilities_json': manifest, 'client_id': 'another'}})])
+        names = {tool['name'] for tool in out[1]['result']['tools']}
+        self.assertTrue({'aihub_capability_publish', 'aihub_capability_list',
+                         'aihub_capability_recommend', 'aihub_capability_dispatch'}.issubset(names))
+        self.assertTrue(all(not item['result']['isError'] for item in out[2:5]))
+        self.assertEqual(out[5]['error']['code'], -32602)
+        self.assertEqual([path.rsplit('/', 1)[-1] for path, _ in self.server.calls],
+                         ['client_heartbeat', 'capability_publish', 'capability_recommend', 'capability_dispatch'])
+        self.assertTrue(all(body['client_id'] == 'test-codex' for _, body in self.server.calls))
+        self.assertEqual(err, '')
 
     def test_http_failure_diagnostics_and_no_redirect(self):
         for status in (302, 403, 500):

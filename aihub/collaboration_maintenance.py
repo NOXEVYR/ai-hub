@@ -4,6 +4,7 @@ Source inventories never grant write/delete authority. Only collaboration's own
 registered temporary artifacts can enter the separately audited recycler.
 """
 import contextlib
+import collections
 import copy
 import json
 import os
@@ -14,14 +15,17 @@ import threading
 import time
 import uuid
 
-from . import config, recycle
+from . import config, recycle, service_control
 
 INTERVAL = 3600
 MAX_FILES = 20000
 MAX_ITEMS = 2000
 MAX_DIRS = 2000
 SCAN_SECONDS = 10
-TEXT_EXTENSIONS = {'.md', '.txt', '.rst', '.pdf', '.docx'}
+TEXT_EXTENSIONS = {'.md', '.txt', '.rst', '.html', '.htm', '.pdf', '.docx'}
+_SCAN_LOCK = threading.RLock()
+REPORT_EXCLUDED = {'datasets', 'dataset', 'captions', 'caption', 'build', 'dist', 'releases', 'packages'}
+WORK_BRANCHES = {'reports', 'report', 'outputs', 'output', 'deliverables', 'delivery', 'aihub', '报告', '交付'}
 EXCLUDED = {'.git', '.codex', '.zcode', '.workbuddy', '.codebuddy', '.dsh',
             'node_modules', 'vendor', 'runtime', 'site-packages', 'venv', '.venv',
             '__pycache__', 'backups', 'sessions', 'credentials', 'secrets',
@@ -61,6 +65,10 @@ def _db():
           CREATE TABLE IF NOT EXISTS inventory(
             source_id TEXT NOT NULL, path TEXT NOT NULL, title TEXT, size INTEGER,
             mtime REAL, category TEXT, PRIMARY KEY(source_id,path));
+          CREATE TABLE IF NOT EXISTS source_scan_progress(
+            source_id TEXT PRIMARY KEY, root TEXT NOT NULL, state TEXT NOT NULL, lease_until REAL NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS source_scan_seen(
+            source_id TEXT NOT NULL, generation TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(source_id,generation,path));
           CREATE TABLE IF NOT EXISTS policies(
             root TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
             days INTEGER NOT NULL DEFAULT 7, next_run REAL DEFAULT 0,
@@ -171,7 +179,50 @@ def _safe_name(name):
             ('credential', 'secret', 'token', 'password', 'cookie', 'auth.json', '凭据', '密码')))
 
 
+def inventory_path_allowed(path, base):
+    """Report-only role filter, relative to the explicitly authorized source."""
+    try:
+        relative = Path(path).relative_to(Path(base))
+    except ValueError:
+        return False
+    parts = [part.casefold() for part in relative.parts]
+    if not parts or any(not _safe_name(part) for part in relative.parts):
+        return False
+    if any(part in EXCLUDED or part in REPORT_EXCLUDED for part in parts[:-1]):
+        return False
+    if any('.pre-update-' in part or '.pre-migration-' in part for part in parts[:-1]):
+        return False
+    # A source explicitly rooted inside Work can opt into its real reports.
+    if 'work' in parts[:-1]:
+        index = parts.index('work')
+        tail = parts[index + 1:-1]
+        if tail and tail[0] not in WORK_BRANCHES:
+            return False
+    return Path(path).suffix.casefold() in TEXT_EXTENSIONS
+
+
+def _descend_report_folder(path, base):
+    relative = Path(path).relative_to(Path(base))
+    parts = [part.casefold() for part in relative.parts]
+    if any(not _safe_name(part) or part in EXCLUDED or part in REPORT_EXCLUDED for part in parts):
+        return False
+    if any('.pre-update-' in part or '.pre-migration-' in part for part in parts):
+        return False
+    if 'work' in parts:
+        index = parts.index('work')
+        tail = parts[index + 1:]
+        if tail and tail[0] not in WORK_BRANCHES:
+            return False
+    return not config._within(path, config.APP_DIR) and not config._within(path, config.DATA_DIR)
+
+
 def scan_source(cfg, body):
+    # In-process serialization plus persisted lease protect the same cursor across services.
+    with _SCAN_LOCK:
+        return _scan_source(cfg, body)
+
+
+def _scan_source(cfg, body):
     root, ident = _root(cfg), body.get('source_id')
     with _db() as conn:
         source = conn.execute('SELECT * FROM sources WHERE root=? AND id=?', (root, ident)).fetchone()
@@ -179,63 +230,118 @@ def scan_source(cfg, body):
         raise ValueError('来源不存在或不属于当前工作区。')
     base = _source_path(source['path'])
     root_identity = os.stat(base)
-    stack, rows, errors = [(base, 0)], [], []
-    started = time.monotonic()
-    examined, directories, truncated = 0, 0, False
-    while stack:
-        if len(rows) >= MAX_ITEMS or examined >= MAX_FILES or directories >= MAX_DIRS or time.monotonic() - started > SCAN_SECONDS:
-            truncated = True
-            break
-        folder, depth = stack.pop()
-        try:
-            config._check_ancestors(folder)
-            directories += 1
-            with os.scandir(folder) as entries:
-                for entry in entries:
-                    examined += 1
-                    if examined > MAX_FILES or len(rows) >= MAX_ITEMS or time.monotonic() - started > SCAN_SECONDS:
-                        truncated = True
-                        break
-                    if not _safe_name(entry.name):
-                        continue
-                    # Windows DirEntry.stat may omit the hard-link count; lstat is required.
-                    info = os.lstat(entry.path)
-                    if config._is_reparse(info):
-                        continue
-                    if stat.S_ISDIR(info.st_mode):
-                        if (entry.name.casefold() not in EXCLUDED and not config._within(entry.path, config.APP_DIR)
-                                and not config._within(entry.path, config.DATA_DIR)):
-                            if depth < 12:
-                                stack.append((entry.path, depth + 1))
-                            else:
-                                truncated = True
-                    elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and Path(entry.name).suffix.casefold() in TEXT_EXTENSIONS:
-                        # Metadata only: never ingest secrets, document text or executable code.
-                        rows.append({'source_id': ident, 'path': entry.path, 'title': entry.name,
-                                     'size': info.st_size, 'mtime': info.st_mtime, 'category': category(entry.path)})
-        except OSError as error:
-            errors.append(str(error)[:300])
-    config._check_ancestors(base)
-    current = os.stat(base)
-    if (root_identity.st_dev, root_identity.st_ino) != (current.st_dev, current.st_ino):
-        raise ValueError('来源目录在盘点期间发生变化，原索引保留。')
-    scanned_at = time.time()
+    identity = [str(root_identity.st_dev), str(root_identity.st_ino)]
     with _db() as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
-        # Never clear previously valid rows after a partial or failed inventory.
-        if not truncated and not errors:
-            conn.execute('DELETE FROM inventory WHERE source_id=?', (ident,))
-        conn.executemany('INSERT OR REPLACE INTO inventory(source_id,path,title,size,mtime,category) VALUES(?,?,?,?,?,?)',
-                         [(ident, r['path'], r['title'], r['size'], r['mtime'], r['category']) for r in rows])
-        counts = conn.execute('SELECT count(*),coalesce(sum(size),0) FROM inventory WHERE source_id=?', (ident,)).fetchone()
-        conn.execute('UPDATE sources SET scanned_at=?,file_count=?,bytes=?,truncated=? WHERE id=? AND root=?',
-                     (scanned_at, counts[0], counts[1], int(truncated or bool(errors)), ident, root))
-    categories = {}
-    for row in rows:
-        categories[row['category']] = categories.get(row['category'], 0) + 1
-    return {'items': rows, 'scanned_at': scanned_at, 'truncated': truncated, 'errors': errors,
-            'summary': {'files': len(rows), 'bytes': sum(r['size'] for r in rows), 'categories': categories},
-            'read_only': True, 'retention_authority': False}
+        saved = conn.execute('SELECT * FROM source_scan_progress WHERE root=? AND source_id=?', (root, ident)).fetchone()
+        if saved and saved['lease_until'] > time.time():
+            raise ValueError('该来源正在盘点，请等待当前批次结束。')
+        state = json.loads(saved['state']) if saved else None
+        if state and state.get('identity') != identity:
+            raise ValueError('来源目录身份改变，保留旧索引，请重新确认来源。')
+        resumed = bool(state and state.get('queue'))
+        if not resumed:
+            state = {'generation': uuid.uuid4().hex, 'identity': identity, 'queue': [['', 0, '']],
+                     'errors': [], 'examined': 0, 'directories': 0, 'started_at': time.time()}
+            conn.execute('DELETE FROM source_scan_seen WHERE source_id=?', (ident,))
+        state['batch_token'] = uuid.uuid4().hex
+        lease_state = json.dumps(state)
+        conn.execute('INSERT INTO source_scan_progress VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET root=excluded.root,state=excluded.state,lease_until=excluded.lease_until',
+                     (ident, root, lease_state, time.time() + max(SCAN_SECONDS * 3, 30)))
+    queue, rows = collections.deque(state['queue']), []
+    errors = list(state.get('errors', []))
+    examined, directories = 0, 0
+    started = time.monotonic()
+    try:
+        while queue and len(rows) < MAX_ITEMS and examined < MAX_FILES and directories < MAX_DIRS and time.monotonic() - started < SCAN_SECONDS:
+            relative, depth, after = queue.popleft()
+            folder = os.path.join(base, relative)
+            # Cursor data is untrusted persisted state: cannot grant a new path scope.
+            if (not config._within(folder, base) or '..' in relative.replace('\\', '/').split('/')
+                    or os.path.isabs(relative)):
+                raise ValueError('来源续扫路径不合法，原索引保留。')
+            try:
+                if relative and not _descend_report_folder(folder, base):
+                    raise ValueError('续扫目录不在报告盘点范围内。')
+                config._check_ancestors(folder)
+                directories += 1
+                with os.scandir(folder) as stream:
+                    # Bound the name snapshot as well as stat calls. Exceptionally huge
+                    # directories remain explicitly partial; siblings still get a turn.
+                    entries = []
+                    for entry in stream:
+                        if len(entries) >= MAX_FILES or time.monotonic() - started >= SCAN_SECONDS:
+                            if len(errors) < 20:
+                                errors.append('目录名称枚举达到预算，未完整盘点：' + folder)
+                            break
+                        entries.append(entry)
+                    entries.sort(key=lambda entry: (entry.name.casefold(), entry.name))
+                remaining = [entry for entry in entries if entry.name.casefold() + '\0' + entry.name > after]
+                cursor = after
+                for index, entry in enumerate(remaining):
+                    if len(rows) >= MAX_ITEMS or examined >= MAX_FILES or time.monotonic() - started >= SCAN_SECONDS:
+                        queue.append([relative, depth, cursor])
+                        break
+                    examined += 1
+                    cursor = entry.name.casefold() + '\0' + entry.name
+                    if not _safe_name(entry.name):
+                        continue
+                    try:
+                        info = os.lstat(entry.path)
+                        if config._is_reparse(info):
+                            continue
+                        if stat.S_ISDIR(info.st_mode):
+                            if _descend_report_folder(entry.path, base):
+                                if depth < 12:
+                                    queue.append([os.path.relpath(entry.path, base), depth + 1, ''])
+                                elif len(errors) < 20:
+                                    errors.append('达到目录深度上限：' + entry.path)
+                        elif (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                              and inventory_path_allowed(entry.path, base)):
+                            rows.append({'source_id': ident, 'path': entry.path, 'title': entry.name,
+                                         'size': info.st_size, 'mtime': info.st_mtime, 'category': category(entry.path)})
+                    except OSError as error:
+                        if len(errors) < 20:
+                            errors.append(str(error)[:300])
+            except (OSError, ValueError) as error:
+                if len(errors) < 20:
+                    errors.append(str(error)[:300])
+        config._check_ancestors(base)
+        current = os.stat(base)
+        if identity != [str(current.st_dev), str(current.st_ino)]:
+            raise ValueError('来源目录在盘点期间发生变化，原索引保留。')
+        scanned_at = time.time()
+        state.update(queue=list(queue), errors=errors, examined=state['examined'] + examined,
+                     directories=state['directories'] + directories)
+        truncated = bool(queue or errors)
+        with _db() as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            lease = conn.execute('SELECT state FROM source_scan_progress WHERE root=? AND source_id=?', (root, ident)).fetchone()
+            if not lease or lease['state'] != lease_state:
+                raise ValueError('本批次盘点租约已被接替，原索引保留。')
+            # Revalidate ownership before committing metadata to this root.
+            if not conn.execute('SELECT id FROM sources WHERE root=? AND id=? AND path=?', (root, ident, base)).fetchone():
+                raise ValueError('来源配置已改变，未提交本轮盘点。')
+            conn.executemany('INSERT OR REPLACE INTO inventory(source_id,path,title,size,mtime,category) VALUES(?,?,?,?,?,?)',
+                             [(ident, r['path'], r['title'], r['size'], r['mtime'], r['category']) for r in rows])
+            conn.executemany('INSERT OR IGNORE INTO source_scan_seen VALUES(?,?,?)',
+                             [(ident, state['generation'], r['path']) for r in rows])
+            if not truncated:
+                conn.execute('DELETE FROM inventory WHERE source_id=? AND path NOT IN (SELECT path FROM source_scan_seen WHERE source_id=? AND generation=?)',
+                             (ident, ident, state['generation']))
+            counts = conn.execute('SELECT count(*),coalesce(sum(size),0) FROM inventory WHERE source_id=?', (ident,)).fetchone()
+            conn.execute('UPDATE sources SET scanned_at=?,file_count=?,bytes=?,truncated=? WHERE id=? AND root=?',
+                         (scanned_at, counts[0], counts[1], int(truncated), ident, root))
+            conn.execute('UPDATE source_scan_progress SET state=?,lease_until=0 WHERE root=? AND source_id=?',
+                         (json.dumps(state), root, ident))
+        categories = collections.Counter(row['category'] for row in rows)
+        return {'items': rows, 'scanned_at': scanned_at, 'truncated': truncated, 'errors': errors,
+                'summary': {'files': len(rows), 'bytes': sum(r['size'] for r in rows), 'categories': dict(categories)},
+                'progress': {'resumed': resumed, 'pending_directories': len(queue), 'examined': state['examined'],
+                             'complete': not truncated}, 'read_only': True, 'retention_authority': False}
+    finally:
+        with _db() as conn, conn:
+            conn.execute('UPDATE source_scan_progress SET lease_until=0 WHERE root=? AND source_id=? AND state=?', (root, ident, lease_state))
 
 
 def inventory(cfg):
@@ -317,12 +423,17 @@ def start_scheduler(cfg):
 
     def worker():
         while not stop.is_set():
+            gate = service_control.GATE
+            if not gate.enter():
+                break
             try:
                 snapshot = copy.deepcopy(cfg)
                 if snapshot.get('workspace_managed'):
                     run_retention(snapshot, scheduled=True)
             except (OSError, ValueError, sqlite3.Error):
                 pass  # Missing/disconnected workspaces must never trigger fallback roots.
+            finally:
+                gate.leave()
             stop.wait(60)
 
     thread = threading.Thread(target=worker, name='aihub-managed-temp-retention', daemon=True)

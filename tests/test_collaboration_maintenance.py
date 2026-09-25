@@ -124,6 +124,128 @@ class MaintenanceTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             run.assert_not_called()
 
+    def test_resume_is_fair_across_projects_and_full_round_removes_only_stale_index(self):
+        for project in ('a', 'b', 'c'):
+            folder = self.root / '2026-09-25' / project / 'outputs'
+            folder.mkdir(parents=True)
+            for number in range(3):
+                (folder / ('report%d.md' % number)).write_text(project)
+        source = self.source()
+        with mock.patch.object(maintenance, 'MAX_ITEMS', 1):
+            first = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+            second = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+            self.assertTrue(second['progress']['resumed'])
+            self.assertNotEqual(Path(first['items'][0]['path']).parent, Path(second['items'][0]['path']).parent)
+            for _ in range(15):
+                result = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+                if not result['truncated']:
+                    break
+        self.assertFalse(result['truncated'])
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 9)
+        deleted = self.root / '2026-09-25/a/outputs/report0.md'
+        deleted.unlink()
+        with mock.patch.object(maintenance, 'MAX_ITEMS', 1):
+            maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 9)
+        maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 8)
+
+    def test_report_roles_html_and_explicit_work_source_override(self):
+        paths = ('Datasets/caption.txt', 'captions/photo.txt', 'work/copied-source/README.md',
+                 'work/outputs/result.html', 'outputs/final.htm', 'Reports/review.md', 'root.md',
+                 'node_modules/dependency/README.md', 'releases/package/README.md')
+        for relative in paths:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('never changed')
+        source = self.source()
+        result = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual({Path(r['path']).relative_to(self.root).as_posix() for r in result['items']},
+                         {'work/outputs/result.html', 'outputs/final.htm', 'Reports/review.md', 'root.md'})
+        specific = self.source(self.root / 'work/copied-source')
+        result = maintenance.scan_source(self.cfg, {'source_id': specific['id']})
+        self.assertEqual([r['title'] for r in result['items']], ['README.md'])
+        self.assertTrue(all((self.root / relative).exists() for relative in paths))
+
+    def test_failed_subdirectory_preserves_history_and_does_not_block_sibling(self):
+        for name in ('a', 'b'):
+            (self.root / name).mkdir()
+            (self.root / name / 'report.md').write_text(name)
+        source = self.source()
+        maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        original = os.scandir
+        def fail_a(path):
+            if Path(path) == self.root / 'a':
+                raise PermissionError('fixture denied')
+            return original(path)
+        with mock.patch.object(maintenance.os, 'scandir', side_effect=fail_a):
+            result = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertTrue(result['truncated'])
+        self.assertTrue(result['errors'])
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 2)
+        self.assertEqual([Path(r['path']).parent.name for r in result['items']], ['b'])
+        recovered = maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertFalse(recovered['truncated'])
+
+    def test_scan_symlink_directory_does_not_grant_read_scope(self):
+        outside = self.base / 'outside'
+        outside.mkdir()
+        (outside / 'private.md').write_text('not indexed')
+        try:
+            (self.root / 'linked').symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest('Creating a symlink requires Windows privilege')
+        source = self.source()
+        self.assertEqual(maintenance.scan_source(self.cfg, {'source_id': source['id']})['items'], [])
+
+    def test_reparse_simulation_is_excluded_without_privilege(self):
+        folder = self.root / 'linked'
+        folder.mkdir()
+        (folder / 'private.md').write_text('not indexed')
+        original = os.lstat
+        def reparse(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if Path(path) == folder:
+                return mock.Mock(st_mode=value.st_mode, st_file_attributes=0x400, st_nlink=1)
+            return value
+        source = self.source()
+        with mock.patch.object(maintenance.os, 'lstat', side_effect=reparse):
+            self.assertEqual(maintenance.scan_source(self.cfg, {'source_id': source['id']})['items'], [])
+
+    def test_expired_worker_cannot_commit_or_release_new_lease(self):
+        (self.root / 'report.md').write_text('keep')
+        source = self.source()
+        original = os.scandir
+        replaced = []
+        def replace_lease(path):
+            if not replaced:
+                replaced.append(True)
+                with maintenance._db() as con, con:
+                    con.execute('UPDATE source_scan_progress SET state=?,lease_until=? WHERE source_id=?',
+                                ('{"new_worker":true}', time.time() + 60, source['id']))
+            return original(path)
+        with mock.patch.object(maintenance.os, 'scandir', side_effect=replace_lease):
+            with self.assertRaisesRegex(ValueError, '租约'):
+                maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 0)
+        with maintenance._db() as con:
+            row = con.execute('SELECT state,lease_until FROM source_scan_progress WHERE source_id=?', (source['id'],)).fetchone()
+        self.assertEqual(row['state'], '{"new_worker":true}')
+        self.assertGreater(row['lease_until'], time.time())
+
+    def test_cursor_outside_source_fails_preserving_inventory(self):
+        (self.root / 'report.md').write_text('keep')
+        source = self.source()
+        maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        with maintenance._db() as con, con:
+            row = con.execute('SELECT state FROM source_scan_progress WHERE source_id=?', (source['id'],)).fetchone()
+            state = json.loads(row['state'])
+            state['queue'] = [['../outside', 1, '']]
+            con.execute('UPDATE source_scan_progress SET state=? WHERE source_id=?', (json.dumps(state), source['id']))
+        with self.assertRaises(ValueError):
+            maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual(maintenance.inventory(self.cfg)['total'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

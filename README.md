@@ -1,14 +1,18 @@
-# AI Hub
+# 曜核
 
-2.7.0 源码更新新增协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。源码通过 PR 审核同步；2.7.0 正式下载包尚未发布，下方 2.6.0 仍是现有公开下载，不包含本次新增功能。
+**本地 AI 资产与协作工作台，原名 AI Hub。** 2.9.0 候选版新增跨工具项目/报告索引、报告来源续扫、能力目录、匹配与队列派单，以及 Windows 系统托盘。主程序与桌面壳均为 2.9.0，沿用金色眼形品牌。本分支提供候选源码与程序包；真实托盘交互、各原生客户端重连和三款软件协作链路仍需验收。[能力协议](docs/CAPABILITIES_2.9.md) · [三款产品的协作边界](docs/PRODUCT_COOPERATION.md) · [品牌与兼容约定](docs/BRAND_LUMACORE.md)。
+
+本候选版同时包含 2.7 引入的协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。[更新与验收说明](docs/RELEASE_2.9.md)列出已验证范围与待完成事项。
 
 [返回项目总览](https://github.com/NOXEVYR/portfolio) · [仓库迁移说明](https://github.com/NOXEVYR/ai-hub/blob/main/MIGRATION.md)
 
-![AI Hub 资产工作台](https://raw.githubusercontent.com/NOXEVYR/portfolio/d3b47d7fc4320f627e6b5fc8f653fcbd35007670/docs/assets/ai-hub.svg)
+历史 AI Hub 视觉资料保留在此前的版本记录中；新版图标与界面说明见 [曜核品牌约定](docs/BRAND_LUMACORE.md)。
+
+曜核使用 E01 金色眼形标识；侧栏眼内以短闪与短拖影作克制装饰，在减少动态效果模式下保持静态。这些品牌动效不表示客户端连接或任务运行状态。
 
 **统一管理本地 AI 工作区、模型与资源库。** 创建或接入自己的目录，分配项目输入、过程、输出与交付位置，分类检索模型与 LoRA，并浏览出图库和运行记录。
 
-选用重点：整理跨项目复用的模型和资源，使用 AI Hub；围绕一个作品整理素材、文稿、分镜与制作进度，可查看 [映序](https://github.com/NOXEVYR/yingxu)。
+选用重点：曜核整理跨项目复用的模型、资源、报告与能力调度；[映序](https://github.com/NOXEVYR/yingxu)组织作品的素材、文稿、分镜与进度；棱光负责生成画布和本机图像/视频任务。三款产品的自动串联尚待适配与真实链路验收。
 
 [下载与启动](#获取与启动) · [常用功能](#常用功能) · [项目与验证登记](#项目与验证登记) · [数据与更新](#数据与更新) · [开发和构建](#开发和构建)
 
@@ -22,11 +26,11 @@
 
 在一个本地工作台里管理模型、LoRA、工作流、出图和资料。
 
-AI Hub 采用炭灰界面，提供独立 Windows 桌面窗口。按图片、视频、语言、音频等用途找模型；按风格、角色、光照、细节等用途整理 LoRA。模型保留原文件位置，评分、备注与分类保存在本机。安全区整理通过硬链接建立分类入口，共用文件内容；编辑入口也会改变原件，不作为备份。
+曜核采用深靛背景、金杏主操作与珊瑚点缀，提供独立 Windows 桌面窗口。按图片、视频、语言、音频等用途找模型；按风格、角色、光照、细节等用途整理 LoRA。模型保留原文件位置，评分、备注与分类保存在本机。安全区整理通过硬链接建立分类入口，共用文件内容；编辑入口也会改变原件，不作为备份。
 
 ## 获取与启动
 
-Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解压到一个可写目录后，双击 **AI Hub.exe**。请保留整个解压目录；桌面可以另建快捷方式。
+Windows 桌面包继续使用兼容文件名 `AI Hub.exe`，包含完整程序源码和使用说明。解压到一个可写目录后，双击 **AI Hub.exe**；窗口显示品牌为“曜核”。请保留整个解压目录；桌面可以另建快捷方式。下方历史 2.6.0 下载包仍保留其原有 AI Hub 界面。
 
 运行条件：Windows x64、.NET Framework 4.8+、本机 Python 3.9+、Microsoft Edge WebView2 Runtime。桌面包不捆绑 Python 和 WebView2 Runtime，也不包含模型权重。程序会查找已安装的 Python；也支持将可用解释器放到 `runtime/python.exe`。
 
@@ -38,6 +42,8 @@ Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解�
 
 首次使用：进入 **工作环境**，选择“新建工作环境”或“接入已有目录”，填写自己的根目录。先预览将创建的目录与规则，确认后保存，再开始索引。资产扫描来源和图库来源分开配置；可发现训练验证目录 `verify_out / samples`，数据集与缓存不进入图库。已有结构和 AGENTS.md 保留。需要分类入口时再使用 **安全区整理**。[工作区说明](docs/WORKSPACE_2.6.md)。
 
+当前 **2.9.0 候选包**：[Windows 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-SHA256.txt) · [更新 PR](https://github.com/NOXEVYR/ai-hub/pull/1)。候选包不替换历史版本，建议先解压到新目录验证。
+
 此前公开发行版 **2.6.0**：[Windows 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/main/releases/AI-Hub-v2.6.0-SHA256.txt)。
 
 2.6.0 起源码和发行文件在独立仓库维护。迁移前的历史包继续保留在 portfolio，详情见 [迁移说明](https://github.com/NOXEVYR/ai-hub/blob/main/MIGRATION.md)。
@@ -46,6 +52,9 @@ Windows 桌面包包含 `AI Hub.exe`、完整程序源码和使用说明。解�
 
 | 功能 | 使用方式 |
 | --- | --- |
+| 系统托盘 | 关闭窗口后后台托管；双击图标或右键打开；右键“退出曜核”优雅停止对应后台，忙碌时提示稍后重试 |
+| 项目与报告 | 按项目、工具、类别、收录状态检索；查看覆盖范围、阅读文本、打开文件夹、修正分类；原文件保持原位 |
+| 能力与调度 | 查看声明的 Skill/MCP 能力、匹配理由和客户端心跳；校验输入并排队，需 harness 领取执行，不代表已直接调用模型 |
 | 工作环境与项目 | 新建或接入根目录、来源体检、预览确认、创建 Inputs / Work / Outputs / Deliverables 与 AI 规则交接文件 |
 | 工具规则 | Codex、ZCode、DSH、WorkBuddy 能力提示与项目规则；不改现有会话，不自动启动，不代表已隔离 |
 | 安全区自动整理 | 跨电脑配置目录、创建规范结构、分类预览、硬链接入口、执行记录与撤销、可选启动自动整理 |
@@ -95,11 +104,11 @@ Ctrl+K 聚焦全局模型搜索。返回记录保留在当前页面会话内，�
 
 ## 数据与更新
 
-本地服务仅监听 `127.0.0.1`，默认端口 8765。关闭桌面窗口会保留后台服务和正在运行的任务。网络来源识别和版本检查由用户手动触发；不会自动下载或替换模型。
+本地服务仅监听 `127.0.0.1`，默认端口 8765。关闭桌面窗口会隐藏到系统托盘，保留页面状态、后台服务和正在运行的任务。双击金色眼形图标或右键“打开曜核”恢复窗口；右键“退出曜核”关闭桌面与对应后台。后台正在扫描或处理文件时会拒绝退出并提示稍后重试。网络来源识别和版本检查由用户手动触发；不会自动下载或替换模型。
 
 `data/` 包含索引、配置、评分、备注、来源登记、分类和桌面浏览器配置。升级时保留整个 `data/`，然后替换程序文件；任务运行时请先等任务完成。运行中的 SQLite 请使用 backup API 备份，不能忽略 WAL 只复制数据库文件。
 
-更新前关闭 AI Hub 窗口；后台代码更新后还需重新启动后台服务。只关闭窗口会保留服务，因此不会让旧服务自动加载新版 Python 文件。请只停止属于该应用目录的服务进程。
+更新前等待后台空闲，并通过托盘“退出曜核”停止桌面与后台后替换程序文件，再重新打开。只关闭主窗口会进入托盘，不会加载新的 Python 文件。旧版没有托盘时，请先确认并停止对应安装目录的旧桌面与后台进程，不能凭进程名称批量结束其他应用。
 
 图库删除使用 Windows 回收站，只有索引与实际文件仍一致、且位于已配置出图目录的普通图片才可处理；回收失败时保留文件和索引。
 
@@ -129,4 +138,4 @@ python -B tools/package_release.py --exe "AI Hub.exe" --output releases
 
 ## 2.5 分类与项目登记
 
-2.5.0 当时引入以下分类与登记；桌面壳沿用 2.4.1（本次未修改桌面功能）。新增项目、知识、运行登记与四级工作流证据状态，详见 [结构升级说明](docs/STRUCTURE_2.5.md) 和 [登记格式](docs/REGISTRY.md)。
+2.5.0 当时引入以下分类与登记；该历史版本的桌面壳沿用 2.4.1。项目、知识、运行登记与四级工作流证据状态，详见 [结构升级说明](docs/STRUCTURE_2.5.md) 和 [登记格式](docs/REGISTRY.md)。

@@ -5,7 +5,7 @@ import json
 import time
 import traceback
 
-from . import config as cfgmod
+from . import config as cfgmod, service_control
 from . import images, scan, updater
 
 _jobs = {}
@@ -29,9 +29,13 @@ def running(name):
 
 
 def start(name, target, *args):
+    gate = service_control.GATE
+    if not gate.enter():
+        return None
     with _lock:
         j = _jobs.get(name)
         if j and j["status"] == "running":
+            gate.leave()
             return None
         job = _new_job(name)
         _jobs[name] = job
@@ -45,9 +49,17 @@ def start(name, target, *args):
             job["error"] = f"{e}\n{traceback.format_exc(limit=3)}"
         finally:
             job["finished"] = time.time()
+            gate.leave()
 
     t = threading.Thread(target=run, daemon=True, name=name)
-    t.start()
+    try:
+        t.start()
+    except Exception:
+        job['status'] = 'error'
+        job['error'] = '后台线程未能启动。'
+        job['finished'] = time.time()
+        gate.leave()
+        raise
     return job
 
 

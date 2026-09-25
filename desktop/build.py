@@ -61,11 +61,18 @@ def main():
         for name in members:
             command.append(f"/resource:{folder / name},{name}")
         subprocess.run(command + [str(DESKTOP / "Core.cs"), str(DESKTOP / "Program.cs")], check=True)
+        if args.test:
+            icon_tests = folder / "icon-tests.exe"
+            subprocess.run(common + ["/target:exe", "/reference:System.Drawing.dll", f"/out:{icon_tests}",
+                                      str(DESKTOP / "IconTests.cs")], check=True)
+            subprocess.run([str(icon_tests), str(ROOT / "frontend/brand.ico"), str(exe)], check=True)
         shutil.copy2(exe, output)
     result = {"exe": str(output), "bytes": output.stat().st_size,
               "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
               "architecture": "x64", "subsystem": "Windows GUI", "sdk": SDK_VERSION,
-              "sdk_sha256": SDK_SHA256, "contains_user_data": False}
+              "sdk_sha256": SDK_SHA256, "contains_user_data": False,
+              "display_name": "曜核", "desktop_version": "2.9.0.0",
+              "icon_sha256": hashlib.sha256((ROOT / "frontend/brand.ico").read_bytes()).hexdigest()}
     output.with_suffix(".build.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
 

@@ -189,7 +189,7 @@
       get('refresh').onclick=()=>act(refresh);
       get('mcp-tool').onchange=renderConfig;
       el.querySelectorAll('[data-co-tab]').forEach(n=>{n.onclick=()=>selectTab(n.dataset.coTab);});
-      selectTab(restored?.tab);restore(el,restored);el.dataset.coTask=restored?.selectedTask || '';
+      selectTab(params?.get?.('tab') || restored?.tab);restore(el,restored);el.dataset.coTask=restored?.selectedTask || '';
       await act(refresh);
       if(active() && restored?.root && restored.root!==state.root){setError('工作环境已切换。已保留文字草稿，请核对项目与来源；原报告选择已清除。');get('memory-source').value='';}
       else if(active() && restored?.draft?.['memory-source'])get('memory-source').value=restored.draft['memory-source'];

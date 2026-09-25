@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -13,11 +13,11 @@ using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-[assembly: AssemblyTitle("AI Hub")]
-[assembly: AssemblyDescription("AI Hub 本地资产管理桌面终端")]
-[assembly: AssemblyProduct("AI Hub Desktop")]
-[assembly: AssemblyVersion("2.4.1.0")]
-[assembly: AssemblyFileVersion("2.4.1.0")]
+[assembly: AssemblyTitle("曜核")]
+[assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
+[assembly: AssemblyProduct("曜核")]
+[assembly: AssemblyVersion("2.9.0.0")]
+[assembly: AssemblyFileVersion("2.9.0.0")]
 
 namespace AIHub.Desktop
 {
@@ -34,10 +34,10 @@ namespace AIHub.Desktop
             try
             {
                 if (args.Length != 0 && !(args.Length == 2 && args[0] == "--root"))
-                    throw new ArgumentException("支持的参数：AI Hub.exe --root <AI Hub 程序目录>");
+                    throw new ArgumentException("支持的参数：AI Hub.exe --root <曜核 程序目录>");
                 Hub.Root = Hub.NormalizeRoot(args.Length == 2 ? args[1] : AppDomain.CurrentDomain.BaseDirectory);
                 if (!Hub.IsAppRoot(Hub.Root))
-                    throw new DirectoryNotFoundException("请把 AI Hub.exe 放在原 AI Hub 程序文件夹内，与 server.py、launcher.pyw 和 frontend 同级。桌面请使用快捷方式。");
+                    throw new DirectoryNotFoundException("请把 AI Hub.exe 放在曜核 程序文件夹内，与 server.py、launcher.pyw 和 frontend 同级。桌面请使用快捷方式。");
                 Hub.Port = Hub.ReadPort(Path.Combine(Hub.Root, "data", "config.json"));
                 Hub.Url = "http://127.0.0.1:" + Hub.Port + "/";
                 string id = Hub.Identity(Hub.Root.ToUpperInvariant()).Substring(0, 24);
@@ -65,7 +65,7 @@ namespace AIHub.Desktop
             catch (Exception e)
             {
                 Hub.Log("desktop_error " + e.GetType().Name + ": " + e.Message);
-                MessageBox.Show(e.Message, "AI Hub · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(e.Message, "曜核 · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }
@@ -110,7 +110,7 @@ namespace AIHub.Desktop
         private static void RunWindow()
         {
             CoreWebView2Environment.SetLoaderDllFolderPath(LoaderFolder);
-            Application.Run(new HubWindow());
+            using (var window = new HubWindow()) Application.Run(window);
         }
 
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
@@ -132,13 +132,23 @@ namespace AIHub.Desktop
         private readonly Label loading;
         private readonly RegisteredWaitHandle activation;
         private readonly CancellationTokenSource closing = new CancellationTokenSource();
+        private readonly NotifyIcon tray;
+        private readonly ContextMenuStrip trayMenu;
+        private readonly ToolStripMenuItem retryItem;
+        private readonly ToolStripMenuItem exitItem;
+        private Task<string> serviceStartup;
+        private bool initializing;
+        private bool exiting;
+        private bool exitApproved;
+        private bool trayHintShown;
+        private bool resourcesReleased;
         private bool loaded;
 
         internal HubWindow()
         {
-            Text = "AI Hub · 本地资产管理";
-            BackColor = Color.FromArgb(23, 24, 28);
-            ForeColor = Color.FromArgb(229, 231, 235);
+            Text = "曜核 · 本地资产与协作管理";
+            BackColor = Color.FromArgb(18, 22, 41);
+            ForeColor = Color.FromArgb(242, 239, 230);
             Font = new Font("Microsoft YaHei UI", 10F);
             AutoScaleMode = AutoScaleMode.Dpi;
             MinimumSize = new Size(860, 600);
@@ -146,8 +156,21 @@ namespace AIHub.Desktop
             StartPosition = FormStartPosition.CenterScreen;
             using (var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("brand.ico"))
                 Icon = new Icon(source);
+            trayMenu = new ContextMenuStrip();
+            var openItem = new ToolStripMenuItem("打开曜核");
+            openItem.Click += delegate { BringToUser(); };
+            retryItem = new ToolStripMenuItem("重试打开工作台") { Enabled = false };
+            retryItem.Click += async delegate { BringToUser(); await InitializeAsync(); };
+            exitItem = new ToolStripMenuItem("退出曜核（含后台）");
+            exitItem.Click += async delegate { await ExitAsync(); };
+            trayMenu.Items.Add(openItem);
+            trayMenu.Items.Add(retryItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(exitItem);
+            tray = new NotifyIcon { Icon = Icon, Text = "曜核 · 本地 AI 工作台", ContextMenuStrip = trayMenu, Visible = true };
+            tray.DoubleClick += delegate { BringToUser(); };
             loading = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
-                Text = "AI HUB\n\n正在打开本地工作空间…", Font = new Font("Microsoft YaHei UI", 15F) };
+                Text = "曜核\n\n正在打开本地工作空间…", Font = new Font("Microsoft YaHei UI", 15F) };
             Controls.Add(loading);
             RestoreWindow();
             activation = ThreadPool.RegisterWaitForSingleObject(Program.ActivateEvent, delegate
@@ -165,7 +188,7 @@ namespace AIHub.Desktop
             {
                 int dark = 1;
                 DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
-                int caption = 0x001c1817;
+                int caption = 0x00291612;
                 DwmSetWindowAttribute(Handle, 35, ref caption, sizeof(int));
             }
             catch (DllNotFoundException) { }
@@ -173,6 +196,7 @@ namespace AIHub.Desktop
 
         private void BringToUser()
         {
+            if (IsDisposed || closing.IsCancellationRequested) return;
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Show();
             Activate();
@@ -181,20 +205,29 @@ namespace AIHub.Desktop
 
         private async Task InitializeAsync()
         {
+            if (initializing || exiting || closing.IsCancellationRequested) return;
+            initializing = true;
+            retryItem.Enabled = false;
+            loaded = false;
             try
             {
-                string status = await Task.Run(() => Hub.EnsureService());
-                if (closing.IsCancellationRequested) return;
+                if (web != null) { web.Dispose(); web = null; }
+                loading.Visible = true;
+                loading.Text = "曜核\n\n正在打开本地工作空间…";
+                loading.BringToFront();
+                serviceStartup = Task.Run(() => Hub.EnsureService());
+                string status = await serviceStartup;
+                if (exiting || closing.IsCancellationRequested) return;
                 Hub.Log("service_" + status + " port=" + Hub.Port);
-                loading.Text = "AI HUB\n\n正在加载工作台…";
+                loading.Text = "曜核\n\n正在加载工作台…";
                 web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
                 Controls.Add(web);
                 var options = new CoreWebView2EnvironmentOptions();
                 options.Language = "zh-CN";
                 var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Hub.Cache, "WebView2"), options);
-                if (closing.IsCancellationRequested) return;
+                if (exiting || closing.IsCancellationRequested) return;
                 await web.EnsureCoreWebView2Async(environment);
-                if (closing.IsCancellationRequested) return;
+                if (exiting || closing.IsCancellationRequested) return;
                 var core = web.CoreWebView2;
                 core.Profile.PreferredColorScheme = CoreWebView2PreferredColorScheme.Dark;
                 core.Settings.IsStatusBarEnabled = false;
@@ -224,19 +257,19 @@ namespace AIHub.Desktop
                 core.DownloadStarting += delegate(object sender, CoreWebView2DownloadStartingEventArgs e)
                 {
                     e.Cancel = true;
-                    MessageBox.Show(this, "请在浏览器中打开来源页面后下载文件。", "AI Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this, "请在浏览器中打开来源页面后下载文件。", "曜核", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 };
                 core.ProcessFailed += delegate
                 {
-                    if (!closing.IsCancellationRequested) ShowFailure("页面运行环境意外退出。请关闭窗口后重新打开 AI Hub。");
+                    if (!exiting && !closing.IsCancellationRequested) ShowFailure("页面运行环境意外退出。请从托盘菜单选择“重试打开工作台”。");
                 };
                 core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
                 {
-                    if (closing.IsCancellationRequested) return;
+                    if (exiting || closing.IsCancellationRequested) return;
                     if (!e.IsSuccess)
                     {
                         if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
-                            ShowFailure("工作台页面加载失败，请重新打开 AI Hub。错误：" + e.WebErrorStatus);
+                            ShowFailure("工作台页面加载失败，请从托盘菜单重试。错误：" + e.WebErrorStatus);
                         return;
                     }
                     loading.Visible = false;
@@ -252,10 +285,15 @@ namespace AIHub.Desktop
             }
             catch (Exception e)
             {
-                if (closing.IsCancellationRequested) return;
+                if (exiting || closing.IsCancellationRequested) return;
                 Hub.Log("window_error " + e.GetType().Name + ": " + e.Message);
                 ShowFailure(e is WebView2RuntimeNotFoundException ?
                     "未找到 Microsoft Edge WebView2 运行环境。请安装微软官方 WebView2 Runtime 后再打开。" : e.Message);
+            }
+            finally
+            {
+                initializing = false;
+                if (!closing.IsCancellationRequested) retryItem.Enabled = !exiting && !loaded;
             }
         }
 
@@ -263,9 +301,55 @@ namespace AIHub.Desktop
         {
             if (web != null) web.Visible = false;
             loading.Visible = true;
-            loading.Text = "AI HUB\n\n工作台未能打开\n\n请关闭窗口后重试。";
+            loading.Text = "曜核\n\n工作台未能打开\n\n请右键任务栏托盘中的曜核图标，重试打开工作台或退出。";
             loading.BringToFront();
-            MessageBox.Show(this, message, "AI Hub · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            retryItem.Enabled = !exiting;
+            if (Visible) MessageBox.Show(this, message, "曜核 · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            else tray.ShowBalloonTip(5000, "曜核 · 启动提示", message, ToolTipIcon.Error);
+        }
+
+        private async Task ExitAsync()
+        {
+            if (exiting || closing.IsCancellationRequested) return;
+            exiting = true;
+            retryItem.Enabled = false;
+            exitItem.Enabled = false;
+            tray.Text = "曜核 · 正在退出后台…";
+            try
+            {
+                // Startup must settle before shutdown. Otherwise its late completion
+                // could leave a newly started service behind a removed tray icon.
+                if (serviceStartup != null)
+                {
+                    try { await serviceStartup; } catch { }
+                }
+                if (closing.IsCancellationRequested) return;
+                var result = await Task.Run(() => Hub.ShutdownService());
+                if (closing.IsCancellationRequested) return;
+                if (result.Stopped)
+                {
+                    exitApproved = true;
+                    Hub.Log("desktop_exit service_stopped");
+                    Close();
+                }
+                else
+                {
+                    Hub.Log("desktop_exit_deferred");
+                    tray.ShowBalloonTip(7000, "曜核暂未退出", result.Message, ToolTipIcon.Warning);
+                    BringToUser();
+                    MessageBox.Show(this, result.Message, "曜核暂未退出", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            finally
+            {
+                if (!closing.IsCancellationRequested)
+                {
+                    exiting = false;
+                    exitItem.Enabled = true;
+                    retryItem.Enabled = !initializing;
+                    tray.Text = "曜核 · 本地 AI 工作台";
+                }
+            }
         }
 
         private void OpenWebLink(string address)
@@ -303,8 +387,27 @@ namespace AIHub.Desktop
         {
             base.OnFormClosing(e);
             if (e.Cancel) return;
-            closing.Cancel();
-            activation.Unregister(null);
+            SaveWindow();
+            if (Hub.HideOnClose(e.CloseReason == CloseReason.UserClosing, exitApproved))
+            {
+                e.Cancel = true;
+                Hide();
+                if (!trayHintShown)
+                {
+                    trayHintShown = true;
+                    tray.ShowBalloonTip(5000, "曜核已在后台运行", "双击托盘图标打开工作台；右键可退出曜核及后台服务。", ToolTipIcon.Info);
+                }
+                Hub.Log("window_hidden service_preserved");
+                return;
+            }
+            // Session ending and Windows shutdown must never be blocked by an HTTP
+            // request or busy service. Windows owns process lifetime in that path.
+            ReleaseResources();
+            Hub.Log(exitApproved ? "window_closed service_stopped" : "window_closed session_ending");
+        }
+
+        private void SaveWindow()
+        {
             try
             {
                 Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
@@ -313,9 +416,22 @@ namespace AIHub.Desktop
                 File.WriteAllText(Path.Combine(Hub.Cache, "window.json"), new JavaScriptSerializer().Serialize(state), Encoding.UTF8);
             }
             catch { }
-            // The shared backend can be doing a scan. Window lifetime must not terminate it.
-            if (web != null) web.Dispose();
-            Hub.Log("window_closed service_preserved");
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ReleaseResources();
+            base.Dispose(disposing);
+        }
+
+        private void ReleaseResources()
+        {
+            if (resourcesReleased) return;
+            resourcesReleased = true;
+            closing.Cancel();
+            if (activation != null) activation.Unregister(null);
+            if (tray != null) { tray.Visible = false; tray.Dispose(); }
+            if (trayMenu != null) trayMenu.Dispose();
         }
 
         [DllImport("dwmapi.dll")]

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -6,6 +7,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace AIHub.Desktop
 {
@@ -60,7 +62,7 @@ namespace AIHub.Desktop
         private static void ColdStart(string folder, string sourceRoot)
         {
             Hub.Root = folder;
-            Hub.Cache = folder;
+            Hub.Cache = Path.Combine(folder, "data", "desktop");
             var probe = new TcpListener(IPAddress.Loopback, 0);
             probe.Start();
             Hub.Port = ((IPEndPoint)probe.LocalEndpoint).Port;
@@ -79,6 +81,7 @@ namespace AIHub.Desktop
                 "server=HTTPServer(('127.0.0.1',int(sys.argv[sys.argv.index('--port')+1])),Handler)\n" +
                 "threading.Timer(4,server.shutdown).start()\nserver.serve_forever()\nserver.server_close()\n");
             Check(Hub.EnsureService() == "started", "cold startup in isolated Unicode path");
+            Check(Directory.GetFiles(Hub.Cache, "startup-*.json").Length == 0, "real launcher startup receipt is validated and removed");
             string pidRecord = Path.Combine(folder, "data", "server.pid.json");
             string before = File.ReadAllText(pidRecord);
             Check(Hub.EnsureService() == "reused" && File.ReadAllText(pidRecord) == before, "cold-started service reused without replacing PID");
@@ -86,6 +89,147 @@ namespace AIHub.Desktop
             var record = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string, object>>(before);
             using (var process = Process.GetProcessById((int)record["pid"]))
                 Check(process.WaitForExit(10000), "owned fixture stops itself cleanly");
+        }
+
+        private static Dictionary<string, object> Control(string folder, int port)
+        {
+            return new Dictionary<string, object> { { "schema", Hub.ControlProtocol }, { "install_root", folder },
+                { "port", port }, { "instance_id", "fixture-instance" }, { "token", new string('a', 43) } };
+        }
+
+        private static Dictionary<string, object> ControlHealth(string folder)
+        {
+            return new Dictionary<string, object> { { "app", "ai-hub" }, { "control_protocol", Hub.ControlProtocol },
+                { "install_root", folder }, { "service_instance_id", "fixture-instance" } };
+        }
+
+        private static void ShutdownFixture(string folder, bool busy)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Hub.Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            Hub.Root = Hub.NormalizeRoot(folder);
+            Hub.Cache = folder;
+            Hub.StartupUnconfirmed = false;
+            var serializer = new JavaScriptSerializer();
+            File.WriteAllText(Path.Combine(folder, "server-control.json"), serializer.Serialize(Control(Hub.Root, Hub.Port)));
+            bool authenticated = false;
+            var respond = Task.Run(() =>
+            {
+                for (int i = 0; i < (busy ? 2 : 3); i++)
+                {
+                    using (var client = listener.AcceptTcpClient())
+                    using (var stream = client.GetStream())
+                    {
+                        client.ReceiveTimeout = 4000;
+                        var requestHeader = new StringBuilder();
+                        while (!requestHeader.ToString().EndsWith("\r\n\r\n", StringComparison.Ordinal))
+                        {
+                            int next = stream.ReadByte();
+                            if (next < 0 || requestHeader.Length > 8192) throw new IOException("Invalid fixture request");
+                            requestHeader.Append((char)next);
+                        }
+                        string[] lines = requestHeader.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+                        string request = lines[0];
+                        int length = 0;
+                        bool token = false;
+                        foreach (string line in lines)
+                        {
+                            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) length = Int32.Parse(line.Substring(15).Trim());
+                            if (line == "X-AIHub-Control-Token: " + new string('a', 43)) token = true;
+                        }
+                        if (i == 1)
+                        {
+                            var content = new byte[length];
+                            int count = 0;
+                            while (count < content.Length)
+                            {
+                                int read = stream.Read(content, count, content.Length - count);
+                                if (read == 0) throw new IOException("Incomplete fixture request");
+                                count += read;
+                            }
+                            var payload = serializer.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(content));
+                            authenticated = token && request.StartsWith("POST /api/desktop/shutdown ") &&
+                                (string)payload["instance_id"] == "fixture-instance" && (string)payload["install_root"] == Hub.Root;
+                        }
+                        string body = i == 0 ? serializer.Serialize(ControlHealth(Hub.Root)) : i == 2 ? "{\"code\":\"service_stopping\"}" :
+                            busy ? "{\"code\":\"service_busy\"}" : "{\"status\":\"stopping\",\"instance_id\":\"fixture-instance\"}";
+                        var bytes = Encoding.UTF8.GetBytes(body);
+                        string status = i == 0 ? "200 OK" : i == 2 ? "503 Service Unavailable" : busy ? "409 Conflict" : "202 Accepted";
+                        var header = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
+                        stream.Write(header, 0, header.Length);
+                        stream.Write(bytes, 0, bytes.Length);
+                    }
+                }
+                listener.Stop();
+            });
+            try
+            {
+                var result = Hub.ShutdownService();
+                Check(result.Stopped == !busy, busy ? "busy backend keeps tray alive" : "authenticated backend shutdown completes");
+                respond.GetAwaiter().GetResult();
+                Check(authenticated, "shutdown binds token, instance and install root");
+            }
+            finally { listener.Stop(); }
+        }
+
+        private static void LifecycleTests(string folder)
+        {
+            Hub.Root = Hub.NormalizeRoot(folder);
+            Hub.Cache = folder;
+            Hub.Port = 8765;
+            Check(Hub.HideOnClose(true, false), "titlebar close hides instead of exiting");
+            Check(!Hub.HideOnClose(true, true), "approved tray exit closes desktop");
+            Check(!Hub.HideOnClose(false, false), "session shutdown is never redirected to tray");
+            var control = Control(Hub.Root, Hub.Port);
+            var health = ControlHealth(Hub.Root);
+            Check(Hub.ControlMatches(control, health), "matching local shutdown authority accepted");
+            health["service_instance_id"] = "replacement-instance";
+            Check(!Hub.ControlMatches(control, health), "stale control token cannot target replacement instance");
+            health = ControlHealth(Hub.Root);
+            health["install_root"] = Path.Combine(folder, "other-install");
+            Check(!Hub.ControlMatches(control, health), "different installation cannot be shut down");
+            health = ControlHealth(Hub.Root);
+            health.Remove("control_protocol");
+            Check(!Hub.ControlMatches(control, health), "legacy backend has no implicit shutdown authority");
+            string requestId = Guid.NewGuid().ToString("N");
+            string receipt = Path.Combine(folder, "startup-" + requestId + ".json");
+            var record = new Dictionary<string, object> { { "schema", "ai-hub-desktop-start-v1" }, { "request_id", requestId },
+                { "install_root", Hub.Root }, { "child_alive", false } };
+            File.WriteAllText(receipt, new JavaScriptSerializer().Serialize(record));
+            Hub.StartupUnconfirmed = true;
+            Check(Hub.ReadStartupReceipt(requestId) && !Hub.StartupUnconfirmed && !File.Exists(receipt), "failed startup with no child can exit and removes own receipt");
+            Hub.StartupUnconfirmed = true;
+            Check(!Hub.ReadStartupReceipt(Guid.NewGuid().ToString("N")) && Hub.StartupUnconfirmed, "missing startup receipt preserves uncertainty");
+            var childStart = new ProcessStartInfo(Hub.FindPython(), "-c \"import time; time.sleep(1)\"")
+                { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
+            using (var child = Process.Start(childStart))
+            {
+                record["child_alive"] = true;
+                record["child_pid"] = child.Id;
+                record["child_start_filetime"] = child.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();
+                File.WriteAllText(receipt, new JavaScriptSerializer().Serialize(record));
+                Hub.StartupUnconfirmed = true;
+                Check(Hub.ReadStartupReceipt(requestId) && Hub.StartupStillPending(), "late startup binds exact child process identity");
+                Check(child.WaitForExit(5000) && !Hub.StartupStillPending(), "late child death permits subsequent exit without killing it");
+            }
+            using (var child = Process.Start(childStart))
+            {
+                record["child_pid"] = child.Id;
+                record["child_start_filetime"] = (child.StartTime.ToUniversalTime().ToFileTimeUtc() - 1).ToString();
+                File.WriteAllText(receipt, new JavaScriptSerializer().Serialize(record));
+                Hub.StartupUnconfirmed = true;
+                Check(Hub.ReadStartupReceipt(requestId) && !Hub.StartupStillPending() && !child.HasExited, "PID reuse cannot target or terminate a different child");
+                Check(child.WaitForExit(5000), "identity mismatch fixture exits itself");
+            }
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start(); Hub.Port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+            Hub.StartupUnconfirmed = true;
+            Check(!Hub.ShutdownService().Stopped, "uncertain late startup cannot report success");
+            Hub.StartupUnconfirmed = false;
+            Check(Hub.ShutdownService().Stopped, "already stopped backend permits desktop exit");
+            ShutdownFixture(folder, false);
+            ShutdownFixture(folder, true);
         }
 
         private static int Main(string[] args)
@@ -124,6 +268,7 @@ namespace AIHub.Desktop
                 HealthResponse("{\"app\":\"ai-hub\"}", true);
                 HealthResponse("{\"app\":\"other\"}", false);
                 HealthResponse("not-json", false);
+                LifecycleTests(folder);
                 ColdStart(folder, args[0]);
                 Console.WriteLine("Desktop tests passed: " + passed);
                 return 0;

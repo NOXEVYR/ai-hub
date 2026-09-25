@@ -2,7 +2,7 @@
 
 核对日期：2026-09-24。适配器只使用 Python 标准库，服务端始终为本机 AI Hub。无依赖下载，无远程命令执行，无自动更改其他工具配置。AI Hub 主服务须先启动且已有可写的托管工作环境。
 
-版本与环境：2.7.0 源码通过 PR 审核同步，正式 2.7.0 下载包尚未发布，现有公开 2.6.0 包不包含本适配器。AI Hub 主程序需要 Python 3.9+；本 MCP 适配器使用 Python 3.10+；接入配置助手 `tools/configure_harness_mcp.py` 需要 Python 3.11+，以标准库 `tomllib` 校验 Codex 配置。
+版本与环境：本说明记录 2.7 的基础工具，2.9 候选包已包含本适配器及新增的四项能力工具，合计 17 项；新增协议见 [CAPABILITIES_2.9.md](CAPABILITIES_2.9.md)。历史 2.6.0 包不包含协作适配器。AI Hub 主程序需要 Python 3.9+；本 MCP 适配器使用 Python 3.10+；接入配置助手 `tools/configure_harness_mcp.py` 需要 Python 3.11+，以标准库 `tomllib` 校验 Codex 配置。
 
 ## 协议范围
 
@@ -31,7 +31,7 @@
 以实际安装位置替换下列路径。`python.exe` 使用 Python 3.10+ 的**绝对路径**，避免桌面启动时 PATH 与终端不同。例中 `C:/Path/To/Python/python.exe` 是待替换占位符。
 
 ```powershell
-& 'C:\Path\To\Python\python.exe' -B 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py' --port 8765 --client-id codex-main --tool codex
+& 'C:\Path\To\Python\python.exe' -B 'C:\Path\To\AI-Hub\tools\aihub_mcp.py' --port 8765 --client-id codex-main --tool codex
 ```
 
 由 MCP 客户端启动此命令。直接在终端运行会等待 JSON-RPC 输入，不能拿普通自然语言进行协议握手。
@@ -43,7 +43,7 @@
   "mcpServers": {
     "aihub": {
       "command": "C:/Path/To/Python/python.exe",
-      "args": ["-B", "F:/AI/10_Apps/AI_Hub/tools/aihub_mcp.py", "--port", "8765", "--client-id", "workbuddy-main", "--tool", "workbuddy"]
+      "args": ["-B", "C:/Path/To/AI-Hub/tools/aihub_mcp.py", "--port", "8765", "--client-id", "workbuddy-main", "--tool", "workbuddy"]
     }
   }
 }
@@ -51,10 +51,10 @@
 
 ### Codex
 
-现场 CLI 为 `codex-cli 0.142.5`。`codex mcp add --help` 证实命令形式是 `codex mcp add <NAME> -- <COMMAND>...`；帮助中明确配置文件为 `~/.codex/config.toml`。未读取该文件内容，也未执行 add/remove。
+以下命令形式依据 2026-09-24 对 `codex-cli 0.142.5` 的本机帮助核验：`codex mcp add <NAME> -- <COMMAND>...`，默认配置为 `~/.codex/config.toml`。使用其他版本前先检查其 `codex mcp add --help`。
 
 ```powershell
-codex mcp add aihub -- 'C:\Path\To\Python\python.exe' -B 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py' --port 8765 --client-id codex-main --tool codex
+codex mcp add aihub -- 'C:\Path\To\Python\python.exe' -B 'C:\Path\To\AI-Hub\tools\aihub_mcp.py' --port 8765 --client-id codex-main --tool codex
 ```
 
 等价 TOML 片段（合并独立节，不覆盖原文件）：
@@ -62,14 +62,14 @@ codex mcp add aihub -- 'C:\Path\To\Python\python.exe' -B 'F:\AI\10_Apps\AI_Hub\t
 ```toml
 [mcp_servers.aihub]
 command = 'C:\Path\To\Python\python.exe'
-args = ['-B', 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py', '--port', '8765', '--client-id', 'codex-main', '--tool', 'codex']
+args = ['-B', 'C:\Path\To\AI-Hub\tools\aihub_mcp.py', '--port', '8765', '--client-id', 'codex-main', '--tool', 'codex']
 ```
 
-本轮官方 OpenAI MCP 网页连接失败；上述 CLI 语法与配置默认位置依据当前本机帮助，TOML 键仍须由目标客户端校验。参考入口：[官方 Codex MCP 文档](https://developers.openai.com/codex/mcp)。本轮没有替 Codex 客户端安装或发起模型任务。
+目标客户端仍需校验配置并完成实际握手。[官方 Codex MCP 文档](https://developers.openai.com/codex/mcp)可用于核对后续版本；本文示例不表示当前客户端已安装或已连接曜核。
 
 ### DSH
 
-本机 DSH 源码文档提供以下格式；进一步已核实启动器实际固定的 **0.1.1-rc.2** runtime：`DeepSeek_Harness_Launcher/runtime-0.1.1-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js`。其 `--help` 明确支持 `--profile` 和可重复 `--patch`；所安装的 `@deepseek-ai/dsh-mcp-client` package.json 版本同为 0.1.1-rc.2，`lib/index.js` 实际用 MCP SDK 的 stdio transport 接收 command/args/env/cwd。
+以下格式依据 DSH **0.1.1-rc.2** 的 runtime 帮助和同版本 `@deepseek-ai/dsh-mcp-client` 安装代码核验：启动参数支持 `--profile`、可重复的 `--patch`，MCP 客户端支持 stdio 的 command/args/env/cwd。其他版本须再次检查其配置定义。
 
 保存以下 **独立 overlay** 为 `aihub.cordis.yml`，不要覆盖原 patch：
 
@@ -81,16 +81,16 @@ args = ['-B', 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py', '--port', '8765', '--cl
         serverName: aihub
         transport: stdio
         command: 'C:\Path\To\Python\python.exe'
-        args: ['-B', 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py', '--port', '8765', '--client-id', 'dsh-main', '--tool', 'dsh']
+        args: ['-B', 'C:\Path\To\AI-Hub\tools\aihub_mcp.py', '--port', '8765', '--client-id', 'dsh-main', '--tool', 'dsh']
 ```
 
-文档支持 `dsh web --patch <overlay绝对路径>`；持久配置层是 `$DSH_HOME/cordis.patch.yml`，或单 profile 的 `$DSH_HOME/profiles/<name>/cordis.patch.yml`。实际启动器 `Start-DSH-Fast.ps1` 使用 `web`（CLI 证实等价于 profile web），没有给 DSH_HOME 赋值；当前父环境也未设置 DSH_HOME。rc.2 的 dsh-home-paths 证实该条件下默认 `~/.dsh`。因此此入口默认 profile 为 `~\.dsh\profiles\web`。本次未修改 patch、未启动/关闭 DSH；3080 检查时无监听。
+该版本支持 `dsh web --patch <overlay绝对路径>`。持久配置层为 `$DSH_HOME/cordis.patch.yml` 或 `$DSH_HOME/profiles/<name>/cordis.patch.yml`；未指定 DSH_HOME 时默认 `~/.dsh`。实际目录和 profile 由使用者的环境与启动参数决定，请核对正在使用的启动器；不能凭某个文件存在就判定它正在生效。
 
 该客户端当前文档明确 **仅桥接 MCP tools，不支持 resources/prompts**。DSH 可使用 `aihub_memory_search` 获取批准记忆，无需资源接口；桥接后的工具名通常为 `mcp__aihub__aihub_task_list` 等。
 
 ### ZCode
 
-只读核验当前 `F:\tool\ZCode\resources\app.asar/package.json` 版本为 **3.12.3**。打包程序 `out/main/index.js` 定义了用户级 `~/.zcode/cli/config.json` 的 `mcp.servers`，项目级 `.zcode/config.json`，以及可选的 `~/.agents/mcp.json` 的 `mcpServers`。本机用户级 CLI 配置在本次元数据检查时尚未存在；旧 `.zcode/v2/config.json` 存在但不是本次推荐写入点，未读取其内容。
+以下格式依据 **ZCode 3.12.3** 安装目录中的 `resources/app.asar` 核验。程序定义了用户级 `~/.zcode/cli/config.json` 的 `mcp.servers`、项目级 `.zcode/config.json`，以及可选共享配置 `~/.agents/mcp.json` 的 `mcpServers`。使用者需检查自身版本和实际生效层；不要仅凭旧 `.zcode/v2/config.json` 存在就写入它。
 
 安装自带 `resources/glm/zcode.cjs` 的严格 schema 证实 stdio 配置支持 `type`、`command`、`args`、`cwd`、`env`、`enabled`、`timeoutMs`。优先新增/合并专属 CLI 配置，不同时写共享 `.agents` 路径：
 
@@ -101,29 +101,29 @@ args = ['-B', 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py', '--port', '8765', '--cl
       "aihub": {
         "type": "stdio",
         "command": "C:/Path/To/Python/python.exe",
-        "args": ["-B", "F:/AI/10_Apps/AI_Hub/tools/aihub_mcp.py", "--port", "8765", "--client-id", "zcode-main", "--tool", "zcode"]
+        "args": ["-B", "C:/Path/To/AI-Hub/tools/aihub_mcp.py", "--port", "8765", "--client-id", "zcode-main", "--tool", "zcode"]
       }
     }
   }
 }
 ```
 
-这是静态读取当前安装程序得到的格式证据；没有真实连接验收前仍应展示“待接入”。
+这是指定版本安装代码的静态格式证据；没有真实连接验收前仍应展示“待接入”。
 
 ### WorkBuddy
 
-只读核验 `F:\tool\WorkBuddy\resources\app.asar/package.json` 版本为 **5.5.3**。包内 `main/app-instance.js` 将 `CODEBUDDY_CONFIG_DIR` 与 `WORKBUDDY_CONFIG_DIR` 设为 WorkBuddy 数据目录；`cli/product.json` 的 `dataFolderName` 为 `.workbuddy`。当前父进程环境未设这两项覆盖变量；自定义启动器仍可能覆盖，应在部署时再次核对。
+以下格式依据 **WorkBuddy 5.5.3** 安装目录中的 `resources/app.asar` 核验。程序使用 `CODEBUDDY_CONFIG_DIR`、`WORKBUDDY_CONFIG_DIR` 与产品数据目录确定配置位置，默认 `dataFolderName` 为 `.workbuddy`。自定义环境和启动器可以改变位置，部署前应先核对。
 
-包内 CLI 的 `PathUtils.resolveMcpFilePath(USER)` 依次选择数据目录中的 `.mcp.json`、`mcp.json`、旧的 `~/.codebuddy.json`，都不存在时使用第一项。因而默认 WorkBuddy 配置为 `~\.workbuddy\.mcp.json`；本次这些候选文件均未存在。该结论来自安装代码，不能直接把随包 CodeBuddy 通用文档的 `.codebuddy` 路径套到 WorkBuddy。
+该版本 CLI 的 `PathUtils.resolveMcpFilePath(USER)` 依次选择数据目录中的 `.mcp.json`、`mcp.json`、旧的 `~/.codebuddy.json`，都不存在时使用第一项。默认位置因而是 `~/.workbuddy/.mcp.json`。先检查使用者已有文件及覆盖变量，不能直接套用 CodeBuddy 通用文档中的 `.codebuddy` 路径。
 
 使用上文 `mcpServers` JSON 片段，并在 `aihub` 对象中增加 `"type": "stdio"`。本机静态格式证据还包括 `resources/app.asar.unpacked/cli/dist/web-ui/docs/cn/cli/mcp.md` 的 MCP JSONC 说明。若后续已有 JSONC 文件，不能用普通 JSON 解析再整文件回写而丢失注释；优先使用该版本的 MCP 设置界面或已验证的原生 CLI 合并。
 
-### 本机部署合并计划（尚未执行）
+### 安全合并步骤
 
 - Codex：先备份 `~\.codex\config.toml`，用原生 `codex mcp add` 合并独立 aihub 节，不输出原配置。若已有同名服务器，先比较本次目标，不覆盖用户条目。
-- ZCode：检查 `~\.zcode\cli\config.json` 仍不存在且父路径非链接后，以 `open(path, 'x', encoding='utf-8')` 新建最小 JSON；如存在则重新检查结构，备份并仅合并 `mcp.servers.aihub`，其他键保持。
-- WorkBuddy：确认当前数据目录、按上述优先级重新查找；三个候选仍不存在时以排他创建模式新建 `.workbuddy/.mcp.json`。如已存在，保留 JSONC 注释及原服务器，不自动覆盖。
-- DSH：新建独立 `aihub.cordis.yml` overlay，或在备份后向**已确认运行 profile**的 patch 添加独立 insert。本机存在 `~\.dsh\profiles\web\cordis.patch.yml`，仅存在不证明正在运行此 profile。本轮未读取 patch 内的配置/凭据，也未修改。
+- ZCode：先检查实际 CLI 配置路径。不存在且父路径非链接时以排他模式新建最小 JSON；已存在时校验结构、备份并仅合并 `mcp.servers.aihub`，保留其他键。
+- WorkBuddy：确认数据目录并按上述优先级查找；没有配置时才以排他模式创建默认文件。已有 JSONC 必须保留注释和原服务器，不自动覆盖。
+- DSH：新建独立 `aihub.cordis.yml` overlay，或在备份后向已确认的运行 profile 添加独立 insert；不要把本机配置或凭据写入共享报告。
 - 全部：新建/替换前重验文件快照；拒绝同名 aihub 冲突、链接或并发改变；备份放在原文件的受限用户配置位置，勿写公开报告/发行包。回退只移除本次新增服务器，不能整目录恢复而覆盖其他期间改动。配置存在只代表“已配置”，需客户端真实调用 heartbeat 和工具成功后才是“已接入”。
 
 ## 用户主动运行的接入助手
@@ -132,16 +132,16 @@ args = ['-B', 'F:\AI\10_Apps\AI_Hub\tools\aihub_mcp.py', '--port', '8765', '--cl
 
 ```powershell
 # 预览三端的配置目标
-python -B tools/configure_harness_mcp.py --app-dir 'F:\AI\10_Apps\AI_Hub' --python 'C:\Path\To\Python\python.exe'
+python -B tools/configure_harness_mcp.py --app-dir 'C:\Path\To\AI-Hub' --python 'C:\Path\To\Python\python.exe'
 # 用户决定执行后，可分端应用
-python -B tools/configure_harness_mcp.py --app-dir 'F:\AI\10_Apps\AI_Hub' --python 'C:\Path\To\Python\python.exe' --tool zcode --apply
+python -B tools/configure_harness_mcp.py --app-dir 'C:\Path\To\AI-Hub' --python 'C:\Path\To\Python\python.exe' --tool zcode --apply
 ```
 
 参数包括 `--port`、`--tool codex|zcode|workbuddy|all`、可选 `--codex <原生exe绝对路径>`。为了避免 Windows 批处理参数转义问题，Codex 使用原生 exe，不经 npm 的 cmd/ps1 包装器。只增加 aihub 条目，不改变模型、凭据、工具审批策略或沙箱设置。同名不同配置拒绝覆盖；同名完全相同则返回 already_configured。
 
 已有 JSON 仅在严格解析成功且无重复键、结构正确时合并，保留其他字段；JSONC 注释不自动重写。创建使用排他模式，现有文件更新采用快照复核及原子替换；链接、重解析点、硬链接、超大文件均拒绝。备份放在原配置旁 `.aihub-mcp-backups/<唯一时间目录>`，包含原字节与更新后的副本，继承私有用户目录权限；不把内容放进报告或 stdout。CLI 输出全部捕获不打印。原生 Codex 操作失败时可能已改配置，保留前后备份并明确报错，不擅自全文件回滚覆盖并发变更。
 
-本次实机 dry-run（未 apply）结果：Codex `~\.codex\config.toml` 为 would_add；ZCode `.zcode/cli/config.json`、WorkBuddy `.workbuddy/.mcp.json` 为 would_create；无自定义数据目录环境覆盖。这里只代表现场配置准备完成，尚非四端握手完成。
+接入助手的结果由使用者的实际环境决定：`would_add`、`would_create` 只表示预览；即便 `already_configured` 或应用成功，也必须重载客户端并验证 heartbeat 和工具调用，才能确认连接。
 
 DSH不由这个助手自动修改。建议把上节独立 overlay 放到已托管管理目录，然后仅对启动器增加一个参数：
 
