@@ -147,8 +147,7 @@ def add_source(cfg, body):
     label, tool = body.get('label') or Path(path).name, body.get('tool', 'any')
     if not isinstance(label, str) or not 1 <= len(label) <= 120 or any(ord(c) < 32 for c in label):
         raise ValueError('来源名称须为 1–120 个可显示字符。')
-    if tool not in ('any', 'codex', 'zcode', 'workbuddy', 'dsh'):
-        raise ValueError('不支持的工具类型。')
+    _core()._tool(tool, cfg=cfg)
     with _db() as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
         old = conn.execute('SELECT * FROM sources WHERE root=? AND path=?', (root, path)).fetchone()

@@ -1,13 +1,14 @@
-# 曜核 2.9 能力目录与任务调度
+# 曜核能力目录与任务调度（2.9 协议，2.10 工作端登记）
 
 曜核记录原工具提供的 Skill、MCP 接口能力，并通过现有工作端任务队列衔接产物。映序、画布、生成工具仍负责各自的笔记、编辑、生成或创作功能。曜核不会因为登记了接口，就替代原工具或直接执行其命令。
 
-能力提供方 `provider`、MCP 服务名 `server` 与执行工作端 `target_tool` 是不同字段。场景可以覆盖视频、图像、音频、代码、检索、文档和自动化；这些场景不限定能力供应商。当前执行适配仍使用已接入的 Codex、ZCode、WorkBuddy、DSH 工作端。未知工具名称只是候选，不自动生成专属适配或能力声明。
+能力提供方 `provider`、MCP 服务名 `server` 与执行工作端 `target_tool` 是不同字段。场景可以覆盖视频、图像、音频、代码、检索、文档和自动化；这些场景不限定能力供应商。2.10 从当前工作环境的[工作端注册表](HARNESSES_2.10.md)读取执行端：包括四款内置模板和用户先行登记的自定义 ID。工作端须启用 MCP stdio 并实际连接；未知工具名不会由心跳或能力发布自动注册，也不自动获得专属原生配置适配。
 
 ## 状态与实际执行边界
 
 - `discovered`：仅从本机已知 Skills 目录的 `SKILL.md` frontmatter 发现名称、说明，不代表已安装可用、已连接或已公开为能力。
 - `declared`：工作端通过协议上报元数据。目录中的能力均为 `verification_status: unverified`。
+- 工作端管理中的 `invocation_verified` 只证明当前登记成功调用过曜核业务接口，不能改变这里的能力执行验证状态。
 - `recent_heartbeat`：同工作环境中的该客户端在最近 300 秒登记了心跳。`client_online` 是兼容字段，含义也仅为近期心跳，不能作为实时在线保证。
 - `metadata_match`：推荐理由只来自场景、名称、说明和标签匹配。分数不是质量、成本、成功率或安全性评分。
 - `queued` / `worker_required: true`：创建了真实任务和任务说明，等待相应工作端领取。没有发送模型请求、启动第三方程序或执行远端接口。
@@ -73,6 +74,8 @@ discover(cfg)  # 仅本机 UI 可通过 execute 使用
 
 请求可选筛选 `query`（最大 2000 字符，匹配名称、说明、提供方、服务名和标签）、`domain`、`kind`、`tool`。保留 `target_tool` 兼容别名，两者同时提供但不一致时拒绝。bridge 注入的 `client_id` 不用于筛选，因此各工作端能查看同工作环境的共享目录。
 
+`tool/target_tool` 可为该工作环境已登记的自定义 ID，历史筛选允许已停用工作端。条目中的 `tool_enabled` 表示当前允许协议接入；停用或手动模式的能力声明保留在目录中，但不进入任务推荐，也不能再次派单。
+
 返回 `{items, total, worker_required:true, limitations}`。每个条目包含发布的元数据，另加：
 
 ```json
@@ -106,9 +109,13 @@ discover(cfg)  # 仅本机 UI 可通过 execute 使用
 
 模块调用现有 `collaboration.execute(..., 'task_create', ...)`，target_tool 只能来自已登记能力；任务说明保存能力 ID/key、提供方/server、声明客户端、原始输入、约束和预期产物。任务目录、租约与产物边界沿用原协作协议。返回 `{status:'queued', worker_required:true, capability_id, target_tool, execution_mode:'harness_queue', task}`，不包含生成结果或远端调用成功标记。
 
+2.10 派单还会重新核对执行工作端已登记、启用且为 MCP stdio。通过修改 provider/server、声明内容或客户端实例名不能绕过工作端登记。
+
 ### capability_discover（UI）
 
 仅探测当前用户下 `.codex/skills`、`.agents/skills`、`.zcode/skills`、`.workbuddy/skills`、`.dsh/skills` 这些候选目录的直接 Skill 子目录。目录存在与否不推断某产品原生配置已接入。每个文件只取 bounded frontmatter 的单行 name/description；复杂 YAML、多行说明、插件缓存和递归嵌套暂不解析。最多检查 512 个目录条目，40 行 / 8192 字符的 frontmatter，拒绝链接或硬链接文件。
+
+这项 Skill 线索发现与 2.10 的工作端入口发现分开；手动添加工作端不会自动扫描其任意配置目录、安装 Skill 或公开能力。实际能力仍由已连接客户端主动声明。
 
 返回 `{suggestions, skipped, truncated, published:false}`，每条含 name、可选 description、tool、kind、path、source:local_frontmatter、declaration_status:discovered、verification_status:unverified、published:false。path 仅向本机 UI 展示来源，不向 MCP 提供任意文件读取、执行或 native-memory 修改能力。
 

@@ -1,8 +1,8 @@
 # 曜核
 
-**本地 AI 资产与协作工作台，原名 AI Hub。** 2.9.0 候选版新增跨工具项目/报告索引、报告来源续扫、能力目录、匹配与队列派单，以及 Windows 系统托盘。主程序与桌面壳均为 2.9.0，沿用金色眼形品牌。本分支提供候选源码与程序包；真实托盘交互、各原生客户端重连和三款软件协作链路仍需验收。[能力协议](docs/CAPABILITIES_2.9.md) · [三款产品的协作边界](docs/PRODUCT_COOPERATION.md) · [品牌与兼容约定](docs/BRAND_LUMACORE.md)。
+**本地 AI 资产与协作工作台，原名 AI Hub。** 2.10.0 候选版新增工作端接入中心：保留四款内置模板，支持发现本机入口、手动登记其他 AI 工具，并区分登记、心跳与成功协议调用证据。主程序和 MCP bridge 为 2.10.0，桌面壳沿用 2.9.0.0 的金色眼形与系统托盘。跨工具项目/报告索引、能力目录和队列派单继续可用；真实原生客户端、桌面交互和三款软件协作链路仍需验收。[工作端管理](docs/HARNESSES_2.10.md) · [能力协议](docs/CAPABILITIES_2.9.md) · [三款产品的协作边界](docs/PRODUCT_COOPERATION.md)。
 
-本候选版同时包含 2.7 引入的协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。[更新与验收说明](docs/RELEASE_2.9.md)列出已验证范围与待完成事项。
+本候选版同时包含 2.7 引入的协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。[2.10 更新与验收说明](docs/RELEASE_2.10.md)列出交付范围与待完成事项；[2.9 更新记录](docs/RELEASE_2.9.md)保留历史。
 
 [返回项目总览](https://github.com/NOXEVYR/portfolio) · [仓库迁移说明](https://github.com/NOXEVYR/ai-hub/blob/main/MIGRATION.md)
 
@@ -42,7 +42,9 @@ Windows 桌面包继续使用兼容文件名 `AI Hub.exe`，包含完整程序�
 
 首次使用：进入 **工作环境**，选择“新建工作环境”或“接入已有目录”，填写自己的根目录。先预览将创建的目录与规则，确认后保存，再开始索引。资产扫描来源和图库来源分开配置；可发现训练验证目录 `verify_out / samples`，数据集与缓存不进入图库。已有结构和 AGENTS.md 保留。需要分类入口时再使用 **安全区整理**。[工作区说明](docs/WORKSPACE_2.6.md)。
 
-当前 **2.9.0 候选包**：[Windows 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/feat/aihub-collaboration-2.7.0/releases/AI-Hub-v2.9.0-SHA256.txt) · [更新 PR](https://github.com/NOXEVYR/ai-hub/pull/1)。候选包不替换历史版本，建议先解压到新目录验证。
+当前 **2.10.0 候选包**：[Windows 桌面包](releases/AI-Hub-v2.10.0-Windows-x64.zip) · [源码包](releases/AI-Hub-v2.10.0-Source.zip) · [SHA-256](releases/AI-Hub-v2.10.0-SHA256.txt) · [更新 PR](https://github.com/NOXEVYR/ai-hub/pull/1)。候选包不替换历史版本，建议先解压到新目录验证；提供候选包不表示已更新本机正式安装或发布稳定版。
+
+历史 **2.9.0 候选包**：[Windows 桌面包](releases/AI-Hub-v2.9.0-Windows-x64.zip) · [源码包](releases/AI-Hub-v2.9.0-Source.zip) · [SHA-256](releases/AI-Hub-v2.9.0-SHA256.txt)。
 
 此前公开发行版 **2.6.0**：[Windows 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/releases/AI-Hub-v2.6.0-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/main/releases/AI-Hub-v2.6.0-SHA256.txt)。
 
@@ -53,10 +55,11 @@ Windows 桌面包继续使用兼容文件名 `AI Hub.exe`，包含完整程序�
 | 功能 | 使用方式 |
 | --- | --- |
 | 系统托盘 | 关闭窗口后后台托管；双击图标或右键打开；右键“退出曜核”优雅停止对应后台，忙碌时提示稍后重试 |
+| 工作端接入中心 | 内置模板、发现候选、手动登记与启停；按工作环境保存，独立显示入口、登记、心跳与成功协议调用证据 |
 | 项目与报告 | 按项目、工具、类别、收录状态检索；查看覆盖范围、阅读文本、打开文件夹、修正分类；原文件保持原位 |
 | 能力与调度 | 查看声明的 Skill/MCP 能力、匹配理由和客户端心跳；校验输入并排队，需 harness 领取执行，不代表已直接调用模型 |
 | 工作环境与项目 | 新建或接入根目录、来源体检、预览确认、创建 Inputs / Work / Outputs / Deliverables 与 AI 规则交接文件 |
-| 工具规则 | Codex、ZCode、DSH、WorkBuddy 能力提示与项目规则；不改现有会话，不自动启动，不代表已隔离 |
+| 工具规则 | 保留四款内置规则模板；自定义工作端生成 AIHUB_HANDOFF 专属交接文件，不伪称原生规则支持，不自动启动或隔离工具 |
 | 安全区自动整理 | 跨电脑配置目录、创建规范结构、分类预览、硬链接入口、执行记录与撤销、可选启动自动整理 |
 | 按功能查模型 | 图片创作、视频制作、语言与对话、语音与音乐、视觉工具、通用组件、用途待确认 |
 | LoRA 用途 | 风格、角色、光照、细节、姿态构图、服饰、场景、动作运镜、加速等多选分类 |
@@ -107,6 +110,8 @@ Ctrl+K 聚焦全局模型搜索。返回记录保留在当前页面会话内，�
 本地服务仅监听 `127.0.0.1`，默认端口 8765。关闭桌面窗口会隐藏到系统托盘，保留页面状态、后台服务和正在运行的任务。双击金色眼形图标或右键“打开曜核”恢复窗口；右键“退出曜核”关闭桌面与对应后台。后台正在扫描或处理文件时会拒绝退出并提示稍后重试。网络来源识别和版本检查由用户手动触发；不会自动下载或替换模型。
 
 `data/` 包含索引、配置、评分、备注、来源登记、分类和桌面浏览器配置。升级时保留整个 `data/`，然后替换程序文件；任务运行时请先等任务完成。运行中的 SQLite 请使用 backup API 备份，不能忽略 WAL 只复制数据库文件。
+
+工作端登记保存在 `data/harnesses.sqlite3`，按工作环境隔离。发现只检查元数据；保存的程序、工作目录和配置路径不会自动执行或读取原生配置。停用保留历史，有已领取任务时须先完成、交接或释放。配置合并助手仍只适配原有工具，自定义客户端按生成的通用片段及其实际配置格式接入。
 
 更新前等待后台空闲，并通过托盘“退出曜核”停止桌面与后台后替换程序文件，再重新打开。只关闭主窗口会进入托盘，不会加载新的 Python 文件。旧版没有托盘时，请先确认并停止对应安装目录的旧桌面与后台进程，不能凭进程名称批量结束其他应用。
 

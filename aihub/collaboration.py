@@ -13,10 +13,10 @@ import stat
 import threading
 import uuid
 
-from . import config
+from . import config, harnesses
 
 _LOCK = threading.RLock()
-TOOLS = {'any', 'codex', 'zcode', 'dsh', 'workbuddy'}
+TOOLS = {'any', 'codex', 'zcode', 'dsh', 'workbuddy'}  # Legacy presets, not the registry.
 KINDS = {'report': 'Reports', 'output': 'Outputs', 'temp': 'Temp'}
 LIMIT = 200
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -75,6 +75,7 @@ def store(cfg):
 
 
 _SCHEMA = [
+    '''CREATE TABLE IF NOT EXISTS harness_invocations(root TEXT NOT NULL,client_id TEXT NOT NULL,tool TEXT NOT NULL,evidence_key TEXT NOT NULL,last_success TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(root,client_id))''',
     '''CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, root TEXT NOT NULL, project TEXT NOT NULL,
     title TEXT NOT NULL, description TEXT NOT NULL, target_tool TEXT NOT NULL, status TEXT NOT NULL,
     owner TEXT, lease_hash TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, paths TEXT NOT NULL,
@@ -115,9 +116,15 @@ def _segment(value, name):
     return value
 
 
-def _tool(value, any_ok=True):
-    if value not in TOOLS or (not any_ok and value == 'any'):
-        raise ValueError('不支持的客户端类型。')
+def _tool(value, any_ok=True, cfg=None, include_disabled=False, protocol=False):
+    if value == 'any' and any_ok:
+        return value
+    harnesses.validate_tool_id(value)
+    options = harnesses.allowed_ids(cfg, include_disabled=include_disabled) if cfg is not None else TOOLS - {'any'}
+    if value not in options:
+        raise ValueError('工作端尚未登记或已停用，请在工作端接入中心检查。')
+    if protocol and cfg is not None and harnesses.get(cfg, value)['connection_mode'] != 'mcp_stdio':
+        raise ValueError('该工作端使用手动交接，请通过项目交接文件工作，或先启用 MCP 协议。')
     return value
 
 
@@ -231,14 +238,14 @@ def execute(cfg, action, payload, actor='ui'):
     created_files = []
     created_dirs = []
     try:
-        with store(cfg) as (con, root):
+        with harnesses.mutation_guard(), store(cfg) as (con, root):
             p = payload
             stamp = _now()
             if action == 'task_create':
                 project = _segment(p.get('project'), 'project')
                 title = _text(p.get('title'), 'title')
                 description = _text(p.get('description', ''), 'description', 32000, False)
-                tool = _tool(p.get('target_tool', 'any'))
+                tool = _tool(p.get('target_tool', 'any'), cfg=cfg, protocol=True)
                 identifier = str(uuid.uuid4())
                 work = Path(root_path(cfg)) / '40_Projects' / project / 'Work' / 'AIHub' / identifier
                 config._check_ancestors(str(work))
@@ -281,6 +288,8 @@ def execute(cfg, action, payload, actor='ui'):
                 result = _public(_get(con, 'tasks', root, identifier))
                 _audit(con, root, action, identifier, actor)
             elif action == 'task_list':
+                if p.get('target_tool'):
+                    _tool(p['target_tool'], cfg=cfg, include_disabled=True)
                 sql, args = 'SELECT * FROM tasks WHERE root=?', [root]
                 for key in ('status', 'target_tool'):
                     if p.get(key):
@@ -290,6 +299,9 @@ def execute(cfg, action, payload, actor='ui'):
             elif action == 'task_claim':
                 task = _get(con, 'tasks', root, p.get('task_id'))
                 client = _get(con, 'clients', root, p.get('client_id'))
+                _tool(client['tool'], False, cfg=cfg)
+                if harnesses.get(cfg, client['tool'])['connection_mode'] != 'mcp_stdio':
+                    raise ValueError('该工作端未启用 MCP 接单。')
                 if task['status'] != 'queued':
                     raise ValueError('任务已被领取或完成。')
                 if task['target_tool'] not in {'any', client['tool']}:
@@ -311,7 +323,7 @@ def execute(cfg, action, payload, actor='ui'):
             elif action in {'task_finish', 'task_handoff'}:
                 task = _lease(con, root, p)
                 summary = _text(p.get('summary', ''), 'summary', 32000, False)
-                target = _tool(p.get('target_tool')) if action == 'task_handoff' else task['target_tool']
+                target = _tool(p.get('target_tool'), cfg=cfg, protocol=True) if action == 'task_handoff' else task['target_tool']
                 con.execute('UPDATE tasks SET status=?,owner=NULL,lease_hash=NULL,target_tool=?,summary=?,updated_at=? WHERE root=? AND id=?',
                     ('queued' if action == 'task_handoff' else 'completed', target, summary, stamp, root, task['id']))
                 _audit(con, root, action, task['id'], p['client_id'], summary)
@@ -406,7 +418,9 @@ def execute(cfg, action, payload, actor='ui'):
                     memory.update(source_path=source['path'], source_title=source['title'], source_status=source['status'])
             elif action == 'client_heartbeat':
                 identifier = _segment(p.get('client_id'), 'client_id')
-                tool = _tool(p.get('tool'), False)
+                tool = _tool(p.get('tool'), False, cfg=cfg)
+                if harnesses.get(cfg, tool)['connection_mode'] != 'mcp_stdio':
+                    raise ValueError('该工作端只启用了手动交接，尚未启用 MCP 协议。')
                 name = _text(p.get('name'), 'name')
                 if type(p.get('protocol_version')) is not int or p['protocol_version'] != 1:
                     raise ValueError('客户端协议版本不兼容。')

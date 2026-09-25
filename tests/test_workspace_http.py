@@ -126,7 +126,7 @@ class WorkspaceHTTP(unittest.TestCase):
         for name in ('AGENTS.md', 'CODEBUDDY.md', 'TASK_BRIEF.md'):
             self.assertTrue((project / name).is_file(), name)
         brief = Path(made['prompt_path']).read_text(encoding='utf-8')
-        for tool_name in ('Codex', 'ZCode', 'DSH', 'WorkBuddy'):
+        for tool_name in ('Codex', 'ZCode', 'DeepSeek Harness', 'WorkBuddy'):
             self.assertIn(tool_name, brief)
         self.assertFalse(list(project.glob('TOOL_HANDOFF_*.md')))
         self.checks.append('four tool native/handoff files and response types match frontend')

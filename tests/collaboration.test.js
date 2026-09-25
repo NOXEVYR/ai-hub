@@ -15,7 +15,7 @@ function harness(overrides={}) {
     if(s.includes('#co-refresh'))return [...actionNodes,get('#co-refresh'),get('#co-preview')];
     return [];
   }};
-  const api=async(url,opts)=>{requests.push({url,body:opts?.body});const val=Object.hasOwn(overrides,url)?overrides[url]:url.endsWith('/status')?status():{items:[]};return typeof val==='function'?val(opts?.body):val;};
+  const api=async(url,opts)=>{requests.push({url,body:opts?.body});const val=Object.hasOwn(overrides,url)?overrides[url]:url==='/api/harnesses'?{root:'D:/Studio',items:['codex','zcode','workbuddy','dsh'].map(id=>({id,name:id,enabled:true,connection_mode:'mcp_stdio'}))}:url.startsWith('/api/harnesses/config?')?{config:{mcpServers:{aihub:{args:['--client-id',new URLSearchParams(url.split('?')[1]).get('client_id')]}}}}:url.endsWith('/status')?status():{items:[]};return typeof val==='function'?val(opts?.body):val;};
   const page=ui.createPage({api,heading:()=>''});
   return {el,page,key:id=>get('#co-'+id),requests,tabs,panels,fields,actions:actionNodes,submit:id=>get('#co-'+id+'-form').onsubmit({preventDefault(){}})};
 }
@@ -30,10 +30,10 @@ test('untrusted file names, memory content, JSON and errors are escaped in every
 test('initial state reads only, exposes controlled cleanup boundary and source-specific MCP identities',async()=>{
   const h=harness();await h.page(h.el);
   assert.equal(h.key('policy-enabled').checked,true);assert.equal(h.key('policy-days').value,'7');
-  assert(h.requests.every(r=>r.url.endsWith('/status') || r.url.endsWith('/source_list')));
+  assert(h.requests.every(r=>r.url.endsWith('/status') || r.url.endsWith('/source_list') || r.url==='/api/harnesses'));
   assert.match(h.el.innerHTML,/只影响新登记/);assert.match(h.el.innerHTML,/回收失败保留/);assert.match(h.el.innerHTML,/各工具原生记忆不会被读取或修改/);
-  h.key('mcp-tool').value='workbuddy';h.key('mcp-tool').onchange();
-  assert.match(h.key('mcp').innerHTML,/workbuddy-local/);assert(!h.key('mcp').innerHTML.includes('codex-local'));
+  h.el.querySelector('#hc-config-tool').value='workbuddy';h.el.querySelector('#hc-config-tool').onchange();await h.el.querySelector('#hc-config-load').onclick();
+  assert.match(h.el.querySelector('#hc-config-result').innerHTML,/workbuddy-local/);assert(!h.el.querySelector('#hc-config-result').innerHTML.includes('codex-local'));
 });
 
 test('task submission sends contract payload; failures preserve all draft fields',async()=>{
@@ -49,7 +49,7 @@ test('tab switching and navigation snapshot preserve unsaved memory, source and 
   h.tabs.find(t=>t.dataset.coTab==='memories').onclick();assert.equal(h.key('memory-content').value,'未提交的长期约定');assert.equal(h.panels.find(p=>p.dataset.coPanel==='tasks').hidden,true);
   const saved=ui.capture(h.el),next=harness();await next.page(next.el,null,saved);
   assert.equal(next.el.dataset.coTab,'memories');assert.equal(next.key('memory-content').value,'未提交的长期约定');assert.equal(next.key('source-path').value,'D:/Reports');assert.equal(next.key('policy-days').value,'21');assert.equal(next.key('policy-enabled').checked,false);
-  assert.equal(next.requests.length,2);
+  assert.equal(next.requests.length,3);
 });
 
 test('detached async responses never clear drafts or modify stale page',async()=>{

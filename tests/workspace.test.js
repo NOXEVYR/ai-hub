@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const path = require('node:path');
 const workspace = require('../frontend/workspace.js');
-const status = () => ({root:'D:/Studio',configured:true,managed:true,available:true,revision:'r1',
+const status = () => ({tools:[{id:'codex',name:'Codex',enabled:true},{id:'zcode',name:'ZCode',enabled:true},{id:'dsh',name:'DSH',enabled:true},{id:'workbuddy',name:'WorkBuddy',enabled:true}],root:'D:/Studio',configured:true,managed:true,available:true,revision:'r1',
   sources:{scan_roots:['D:/Studio/Models','D:/Studio/Missing'],output_roots:['D:/Studio/Results']},
   source_health:[{kind:'scan',path:'D:/Studio/Missing',status:'missing',reason:'不可访问'},
     {kind:'output',path:'D:/Studio/Results',status:'ok',reason:''}],
@@ -16,6 +16,16 @@ const preview = () => ({token:'preview-token',can_apply:true,root:'D:/Studio',mo
 const projectPreview=()=>({token:'project-token',can_apply:true,root:'D:/Studio/40_Projects/Film',
   directories:[{path:'D:/Studio/40_Projects/Film/Outputs',action:'create'}],
   files:[{path:'D:/Studio/40_Projects/Film/TASK.md',action:'create'}],warnings:['不会自动启动工具'],errors:[]});
+
+test('project choices follow registered enabled tools including manual handoff without fixed defaults',async()=>{
+  const h=harness({'/api/workspace/status':{...status(),tools:[{id:'new-worker',name:'新工作端',enabled:true,connection_mode:'mcp_stdio'},{id:'manual-worker',name:'手动工具',enabled:true,connection_mode:'manual'},{id:'retired-worker',name:'历史工具',enabled:false}]}});
+  await h.page(h.el);
+  assert.match(h.el.innerHTML,/data-ws-project-tool="new-worker"/);
+  assert.match(h.el.innerHTML,/data-ws-project-tool="manual-worker"/);
+  assert(!h.el.innerHTML.includes('data-ws-project-tool="retired-worker"'));
+  assert(!h.el.innerHTML.includes('data-ws-project-tool="codex"'));
+  assert.match(h.el.innerHTML,/已停用/);
+});
 function harness(overrides = {}) {
   const nodes = new Map(), requests = [], toasts = [], add = {dataset:{wsAdd:'0'},textContent:''};
   const tools=['codex','zcode','dsh','workbuddy'].map(id=>({dataset:{wsProjectTool:id},checked:false}));

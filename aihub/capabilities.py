@@ -240,11 +240,13 @@ def _client(cfg, identifier):
     found = _clients(cfg).get(identifier)
     if not found:
         raise ValueError('请先在当前工作环境登记客户端心跳。')
+    collaboration._tool(found['tool'], False, cfg=cfg, protocol=True)
     return found
 
 
 def publish(cfg, body):
     client = _client(cfg, body.get('client_id'))
+    collaboration._tool(client['tool'], False, cfg=cfg, protocol=True)
     items = _json(body.get('capabilities_json'), 256000)
     if not isinstance(items, list) or len(items) > MAX_CAPABILITIES:
         raise ValueError('能力列表不能超过 128 条。')
@@ -272,11 +274,16 @@ def catalog(cfg, body=None):
     if body.get('tool') and body.get('target_tool') and body['tool'] != body['target_tool']:
         raise ValueError('tool 与 target_tool 筛选不一致。')
     selected_tool = body.get('tool') or body.get('target_tool')
-    for field, options in (('domain', DOMAINS), ('kind', KINDS), ('tool', collaboration.TOOLS), ('target_tool', collaboration.TOOLS)):
+    for field in ('tool', 'target_tool'):
+        if body.get(field):
+            collaboration._tool(body[field], cfg=cfg, include_disabled=True)
+    for field, options in (('domain', DOMAINS), ('kind', KINDS)):
         if body.get(field) and body[field] not in options:
             raise ValueError('能力筛选无效。')
     with store(cfg) as (con, root):
         records = [dict(r) for r in con.execute('SELECT * FROM capabilities WHERE root=? ORDER BY client_id,key', (root,))]
+    from . import harnesses
+    enabled_tools = {v['id'] for v in harnesses.list_tools(cfg) if v['enabled'] and v['connection_mode'] == 'mcp_stdio'}
     now = dt.datetime.now(dt.timezone.utc)
     items = []
     for record in records:
@@ -293,8 +300,9 @@ def catalog(cfg, body=None):
         client = clients.get(record['client_id'])
         last_seen = client['last_seen'] if client else None
         age = (now - dt.datetime.fromisoformat(last_seen)).total_seconds() if last_seen else None
-        recent = age is not None and 0 <= age <= 300
-        item.update(id=record['id'], client_id=record['client_id'], target_tool=record['tool'],
+        enabled = record['tool'] in enabled_tools
+        recent = enabled and age is not None and 0 <= age <= 300
+        item.update(tool_enabled=enabled, id=record['id'], client_id=record['client_id'], target_tool=record['tool'],
                     updated_at=record['updated_at'], declaration_status='declared', verification_status='unverified',
                     client_online=recent, client_status='recent_heartbeat' if recent else 'not_recently_seen',
                     last_seen=last_seen, heartbeat_window_seconds=300, execution_mode='harness_queue', worker_required=True)
@@ -311,6 +319,8 @@ def recommend(cfg, body):
     requested = {d for d, words in _DOMAIN_WORDS.items() if any(w in query for w in words)}
     ranked = []
     for item in result['items']:
+        if not item['tool_enabled']:
+            continue
         score, reasons = 0, []
         matched = sorted(requested & set(item['domains']))
         if body.get('domain'):
@@ -337,6 +347,7 @@ def dispatch(cfg, body, actor='ui'):
     item = next((v for v in catalog(cfg)['items'] if v['id'] == identifier), None)
     if not item:
         raise ValueError('当前工作环境找不到该能力，请刷新目录。')
+    collaboration._tool(item['target_tool'], False, cfg=cfg, protocol=True)
     inputs = _json(body.get('input_json', '{}'), 16000)
     _safe_data(inputs)
     _input(inputs, item['inputs'])

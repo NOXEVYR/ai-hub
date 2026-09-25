@@ -63,11 +63,16 @@ class CollaborationHTTP(unittest.TestCase):
         return result
 
     def test_real_stdio_chinese_report_memory_review_and_cross_harness_handoff(self):
+        code, registered = self.request('/api/harnesses/save', {
+            'id': 'studio-cli', 'name': 'Synthetic Studio', 'revision': 0,
+            '_workspace_root': str(self.root), 'connection_mode': 'mcp_stdio'})
+        self.assertEqual(code, 200, registered)
+        self.assertFalse(registered['invocation_verified'])
         stderr = tempfile.TemporaryFile()
         self.addCleanup(stderr.close)
         script = Path(__file__).resolve().parents[1] / 'tools/aihub_mcp.py'
         proc = subprocess.Popen([sys.executable, '-B', str(script), '--port', str(self.http.server_address[1]),
-                                 '--client-id', 'codex-integration', '--tool', 'codex'],
+                                 '--client-id', 'studio-integration', '--tool', 'studio-cli'],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr)
         def end_bridge():
             if proc.poll() is None:
@@ -126,6 +131,10 @@ class CollaborationHTTP(unittest.TestCase):
         self.assertEqual(status['tasks'][0]['status'], 'completed')
         self.assertNotIn(claim['lease_token'], json.dumps(status))
         self.assertTrue(status['policy']['enabled'])
+        evidence = next(v for v in status['tools'] if v['id'] == 'studio-cli')
+        self.assertTrue(evidence['recent_heartbeat'])
+        self.assertTrue(evidence['invocation_verified'])
+        self.assertEqual(evidence['verification_scope'], 'successful_aihub_protocol_call_only')
         self.assertEqual(status['mcp_config']['mcpServers']['aihub']['args'][2], str(self.http.server_address[1]))
         end_bridge()
         reader.join(3)
@@ -165,7 +174,11 @@ class CollaborationHTTP(unittest.TestCase):
             code, result = self.request('/api/collaboration/status')
         self.assertEqual(code, 503)
         self.assertNotIn('private-db-path', json.dumps(result))
-        self.assertEqual(self.call('source_list', {}, mcp=True)['items'], [])
+        code, _ = self.request('/api/collaboration/mcp/source_list', {})
+        self.assertNotEqual(code, 200)
+        self.call('client_heartbeat', {'client_id': 'source-reader', 'tool': 'codex',
+            'name': 'Source reader', 'protocol_version': 1}, mcp=True)
+        self.assertEqual(self.call('source_list', {'client_id': 'source-reader'}, mcp=True)['items'], [])
 
     def test_stale_workspace_and_snapshot_never_mix_roots(self):
         code, _ = self.request('/api/collaboration/task_create', {'project': 'demo', 'title': 'demo', '_workspace_root': str(self.base / 'OldWorkspace')})

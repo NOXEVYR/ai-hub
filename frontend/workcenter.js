@@ -4,7 +4,7 @@
   const rows=v=>Array.isArray(v)?v:Array.isArray(v?.items)?v.items:[];
   const categories={report:'工作报告',plan:'计划方案',requirement:'需求说明',delivery:'交付说明',reference:'参考资料',other_text:'其他文档',temp_candidate:'疑似临时'};
   const intake={registered:'明确登记',indexed:'来源已索引',legacy:'既有资料入口'};
-  const tools={codex:'Codex',zcode:'ZCode',workbuddy:'WorkBuddy',dsh:'DSH',any:'通用来源',unknown:'来源待确认'};
+  const tools=Object.assign(Object.create(null),{any:'通用来源',unknown:'来源待确认'});
   const statusNames={available:'可访问',missing:'文件缺失',rejected:'访问受限',unscanned:'未盘点'};
   const date=v=>{if(!v)return '时间未记录';const d=new Date(typeof v==='number'?v*1000:v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString('zh-CN',{hour12:false});};
   const categoryOptions=selected=>Object.entries(categories).map(([value,label])=>`<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('');
@@ -52,9 +52,9 @@
       async function load(){
         const serial=++listSerial;error('');get('refresh').disabled=true;get('count').textContent='正在读取文档…';
         const query=new URLSearchParams({...Object.fromEntries(['query','project_id','tool','category','intake_status'].map(k=>[k,state[k]])),page:String(state.page),page_size:'30'});
-        try{const data=await api('/api/workcenter/documents?'+query);if(!active()||serial!==listSerial)return;
+        try{const [data,registry]=await Promise.all([api('/api/workcenter/documents?'+query),api('/api/harnesses')]);if(!active()||serial!==listSerial)return;const harnesses=rows(registry?.items);for(const tool of harnesses)tools[tool.id]=(tool.name||tool.id)+(tool.enabled===false?'（已停用）':'');
           state.items=rows(data);const nextRoot=data.root||data.workspace_root||state.root;if(state.root&&state.root!==nextRoot){state.selected='';el.dataset.wcSelected='';++readSerial;restored=null;el.dataset.wcReaderReady='false';Object.keys(drafts).forEach(k=>delete drafts[k]);get('reader').innerHTML='<p class="wc-empty">工作环境已切换，请重新选择文档。</p>';error('工作环境已切换，已清除旧文档选择，筛选文字保留。');}state.root=nextRoot;el.dataset.wcRoot=state.root;state.page=Number(data.page)||state.page;el.dataset.wcPage=String(state.page);
-          state.facets=data.facets || {};get('tools').innerHTML='<button class="btn small" data-wc-tool="">全部来源</button>'+[...new Set(['codex','zcode','workbuddy','dsh',...rows(state.facets.tools).map(t=>t.value)])].filter(Boolean).map(t=>`<button class="btn small" data-wc-tool="${esc(t)}">${esc(tools[t]||t)} 文档</button>`).join('');bindTools();get('project').innerHTML='<option value="">全部项目</option>'+rows(state.facets.projects).map(p=>`<option value="${esc(p.value)}">${esc(p.label)} (${esc(p.count ?? 0)})</option>`).join('');get('project').value=state.project_id;
+          state.facets=data.facets || {};get('tools').innerHTML='<button class="btn small" data-wc-tool="">全部来源</button>'+[...new Set([...harnesses.map(t=>t.id),...rows(state.facets.tools).map(t=>t.value)])].filter(Boolean).map(t=>`<button class="btn small" data-wc-tool="${esc(t)}">${esc(tools[t]||t)} 文档</button>`).join('');bindTools();get('project').innerHTML='<option value="">全部项目</option>'+rows(state.facets.projects).map(p=>`<option value="${esc(p.value)}">${esc(p.label)} (${esc(p.count ?? 0)})</option>`).join('');get('project').value=state.project_id;
           get('coverage').innerHTML=coverageHTML(data.coverage);get('list').innerHTML=documentsHTML(state.items,state.selected);
           const total=Number(data.total)||0,pages=Math.max(1,Math.ceil(total/(Number(data.page_size)||30)));
           get('count').textContent=`${total.toLocaleString()} 份文档 · ${tools[state.tool] || (state.tool?'其他来源':'全部来源')}`;

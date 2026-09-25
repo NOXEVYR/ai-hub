@@ -1118,7 +1118,45 @@ def capabilities_request(db, cfg, params, body):
         return _err('能力目录暂时不可用，未确认创建调度任务。', 503)
 
 
+def harness_request(db, cfg, params, body):
+    from . import harness_api, harnesses
+    import copy
+    action = _q(params, 'action')
+    try:
+        with organization.LOCK:
+            snapshot = copy.deepcopy(cfg)
+            if action == 'save':
+                if not isinstance(body, dict):
+                    return _err('工作端登记必须是对象。')
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(snapshot.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新接入中心后重试。', 409)
+                result = harness_api.save(snapshot, {k: v for k, v in body.items() if k != '_workspace_root'})
+            elif action == 'discover':
+                result = harnesses.discover(snapshot)
+            elif action == 'check':
+                result = harness_api.check(snapshot, _q(params, 'id'))
+            elif action == 'config':
+                result = harness_api.configuration(snapshot, _q(params, 'id'), _q(params, 'client_id'))
+            else:
+                result = harness_api.list_tools(snapshot)
+            return _json_bytes({**result, 'root': snapshot.get('ai_root') or '', 'workspace_root': snapshot.get('ai_root') or ''})
+    except harnesses.RevisionConflict as error:
+        return _err(str(error), 409)
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('工作端登记暂时不可用，请稍后重试。', 503)
+
+
 ROUTES = [
+    ('GET', r'^/api/harnesses$', harness_request),
+    ('GET', r'^/api/harnesses/(?P<action>discover|check|config)$', harness_request),
+    ('POST', r'^/api/harnesses/(?P<action>save)$', harness_request),
     ('GET', r'^/api/workcenter/(?P<action>documents|projects|document)$', workcenter_request),
     ('POST', r'^/api/workcenter/(?P<action>classify|reveal)$', workcenter_request),
     ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
@@ -1134,7 +1172,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.9.0", "desktop_shell_version": "2.9.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.10.0", "desktop_shell_version": "2.9.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),
@@ -1181,8 +1219,9 @@ def dispatch(db, cfg, method, path, params, body):
     if match and method == 'POST':
         from . import collaboration_api
         try:
-            return _json_bytes(collaboration_api.execute(cfg, match[2], body,
-                               actor='mcp' if match[1] else 'ui'))
+            with organization.LOCK:
+                return _json_bytes(collaboration_api.execute(cfg, match[2], body,
+                                   actor='mcp' if match[1] else 'ui'))
         except PermissionError as error:
             return _err(str(error), 403)
         except (ValueError, TypeError) as error:

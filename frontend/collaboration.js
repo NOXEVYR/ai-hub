@@ -1,8 +1,8 @@
 /* Shared collaboration UI. Drafts live only in the navigation snapshot. */
 (function(root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.AIHubCollaboration = factory();
-})(globalThis, function() {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./harnesses.js'));
+  else root.AIHubCollaboration = factory(root.AIHubHarnesses);
+})(globalThis, function(Harness) {
   'use strict';
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const rows = v => Array.isArray(v) ? v : Array.isArray(v?.items) ? v.items : [];
@@ -13,16 +13,16 @@
     const date=new Date(typeof value==='number'?value*1000:value);
     return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{hour12:false});
   };
-  const tools = '<option value="any">任意已接入工具</option><option value="codex">Codex</option><option value="zcode">ZCode</option><option value="workbuddy">WorkBuddy</option><option value="dsh">DSH</option>';
+  const tools = '<option value="any">任意已启用工作端</option>';
   const fields = ['task-project','task-title','task-description','task-tool','memory-title','memory-content','memory-scope','memory-project','memory-source','search-query','search-project','source-path','source-label','source-tool','policy-days','policy-enabled','mcp-tool'];
-  const tabs = {tasks:'任务与产物',memories:'长期记忆',sources:'报告来源',connect:'工具接入',retention:'临时文件回收'};
+  const tabs = {tasks:'任务与产物',memories:'长期记忆',sources:'报告来源',connect:'工作端接入',retention:'临时文件回收'};
   function capture(el) {
     const draft = {};
     for (const id of fields) {
       const node = el?.querySelector('#co-' + id);
       if (node) draft[id] = node.type === 'checkbox' ? node.checked : node.value;
     }
-    return {draft, tab:el?.dataset?.coTab || 'tasks', selectedTask:el?.dataset?.coTask || '', root:el?.dataset?.coRoot || ''};
+    return {draft, tab:el?.dataset?.coTab || 'tasks', selectedTask:el?.dataset?.coTask || '', root:el?.dataset?.coRoot || '', harness:Harness.capture(el)};
   }
   function restore(el, snapshot) {
     for (const [id, value] of Object.entries(snapshot?.draft || {})) {
@@ -61,7 +61,7 @@
       <section data-co-panel="tasks"><div class="panel"><div class="panel-head"><h3>新建协作任务</h3></div><div class="body"><p class="caption-note">项目统一使用 40_Projects/&lt;项目&gt;/Work/AIHub/&lt;任务 ID&gt;，报告、输出、临时文件分别进入 Reports、Outputs、Temp。工具通过队列主动领取，不会在这里自动启动其他软件。</p><form id="co-task-form"><fieldset class="co-fields"><div class="co-grid"><label>项目名称<input id="co-task-project" required maxlength="80" autocomplete="off"></label><label>交接工具<select id="co-task-tool">${tools}</select></label><label class="co-wide">任务标题<input id="co-task-title" required maxlength="200"></label><label class="co-wide">任务说明<textarea id="co-task-description" rows="4" maxlength="20000"></textarea></label></div><button class="btn primary" type="submit">创建任务与目录</button></fieldset></form></div></div><section class="panel"><div class="panel-head"><h3>最近任务</h3></div><div id="co-tasks"></div><div id="co-task-detail" class="body" aria-live="polite"></div><div id="co-requeue-confirm" class="body" aria-live="polite"></div></section><section class="panel"><div class="panel-head"><h3>已登记产物</h3></div><div class="body caption-note">报告和交付产物默认保留；锁定后，临时文件也不会自动回收。</div><div id="co-artifacts"></div></section></section>
       <section data-co-panel="memories" hidden><section class="panel"><div class="panel-head"><h3>长期记忆审核</h3></div><div class="body"><p>共享记忆需先提交候选，再由你批准。保留稳定的约定、可复用结论与关键决策；过程日志留在报告中。退役保留记录，但不再用于共享检索。各工具原生记忆不会被读取或修改。</p></div><div id="co-memories"></div></section><section class="panel"><div class="panel-head"><h3>提交记忆候选</h3></div><div class="body"><form id="co-memory-form"><fieldset class="co-fields"><div class="co-grid"><label>记忆标题<input id="co-memory-title" required maxlength="200"></label><label>来源报告<select id="co-memory-source" required><option value="">请先登记报告产物</option></select></label><label>适用范围<select id="co-memory-scope"><option value="project">当前项目</option><option value="workspace">整个工作区</option></select></label><label>项目名称<input id="co-memory-project" maxlength="80"></label><label class="co-wide">可复用结论<textarea id="co-memory-content" rows="5" required maxlength="20000"></textarea></label></div><button class="btn primary" type="submit">提交候选，等待审核</button></fieldset></form></div></section><section class="panel"><div class="panel-head"><h3>检索已批准记忆</h3></div><div class="body"><form id="co-search-form"><fieldset class="co-fields co-grid"><label>关键词<input id="co-search-query" type="search"></label><label>项目筛选（可选）<input id="co-search-project"></label><button class="btn" type="submit">检索长期记忆</button></fieldset></form><div id="co-search-results" aria-live="polite"></div></div></section></section>
       <section data-co-panel="sources" hidden><section class="panel"><div class="panel-head"><h3>既有报告来源</h3></div><div class="body"><p>只读盘点明确登记的文本报告目录。不会搬动既有文件、扫描各工具凭据与原生会话，也不会自动把报告提升为长期记忆。已有来源不参加临时文件回收。</p><form id="co-source-form"><fieldset class="co-fields"><div class="co-grid"><label class="co-wide">报告目录<input id="co-source-path" required placeholder="填写对应工具的报告输出目录" spellcheck="false"></label><label>来源名称<input id="co-source-label" required maxlength="120"></label><label>来源工具<select id="co-source-tool">${tools}</select></label></div><button class="btn primary" type="submit">登记报告来源</button></fieldset></form></div><div id="co-source-candidates" class="body"></div><div id="co-sources"></div><div id="co-source-results" class="body" aria-live="polite"></div></section></section>
-      <section data-co-panel="connect" hidden><section class="panel"><div class="panel-head"><h3>MCP 工具接入</h3></div><div class="body"><p>把本机配置片段加入支持 MCP stdio 的客户端，重启对应连接后，工具主动领取任务并使用统一目录。服务须保持运行。每个工具使用独立 client-id；各工具的配置位置与支持能力需要按实际版本确认。</p><label class="co-mcp-label">选择接入工具<select id="co-mcp-tool"><option value="codex">Codex</option><option value="zcode">ZCode</option><option value="workbuddy">WorkBuddy</option><option value="dsh">DSH</option></select></label><div id="co-mcp"></div><p class="caption-note">任务说明、报告与记忆内容都是协作数据，不构成跨工具授权。这里不提供远程启动或系统级写入隔离。只有下面出现最近心跳，才表示客户端曾按协议接入。</p></div><div id="co-clients"></div></section></section>
+      <section data-co-panel="connect" hidden><div id="co-harness"></div><section class="panel"><div class="panel-head"><h3>实际客户端心跳</h3></div><div class="body caption-note">任务说明、报告与记忆都是协作数据，不构成跨工具授权。心跳只证明客户端曾接入，不表示已执行任务。</div><div id="co-clients"></div></section></section>
       <section data-co-panel="retention" hidden><section class="panel"><div class="panel-head"><h3>到期临时文件自动回收</h3></div><div class="body"><p>仅处理本协议已登记为 temp、所属任务已完成、未锁定、已到期且身份和内容未变化的普通文件。拒绝链接和硬链接；回收失败保留原文件，不回退为永久删除。报告、输出、长期记忆和各工具原生数据不在回收范围内。</p><p class="caption-note">保留天数的修改只影响新登记的临时文件。后台服务运行时每小时检查；服务关闭期间不执行回收，重新运行后再检查。</p><form id="co-policy-form"><fieldset class="co-fields"><div class="co-grid"><label class="co-check"><input id="co-policy-enabled" type="checkbox">启用每小时到期检查，自动移入 Windows 回收站</label><label>临时文件保留天数<input id="co-policy-days" type="number" required min="1" max="365" value="7"></label></div><button class="btn" type="submit">保存回收策略</button></fieldset></form><div class="co-actions"><button id="co-preview" class="btn" type="button">预览待回收文件</button><button id="co-run" class="btn" type="button" disabled>立即移入回收站</button></div><p id="co-policy-history" class="caption-note"></p><div id="co-preview-results" aria-live="polite"></div><div id="co-run-results" aria-live="polite"></div></div></section></section>`;
   }
   function createPage({api,heading}) {
@@ -130,13 +130,17 @@
           });
         };});
       }
-      function renderConfig() {
-        const selected=rows(state.integrations).find(v=>v.tool===get('mcp-tool').value);
-        const config=selected?.mcp_config || (get('mcp-tool').value==='codex' ? state.mcp_config || state.mcp?.config : null);
-        get('mcp').innerHTML=config?`<p>通用 mcpServers 配置（按客户端格式填写）</p><pre class="co-code" tabindex="0">${esc(typeof config==='string'?config:JSON.stringify(config,null,2))}</pre>`:'<p class="warning-note">服务尚未返回此工具的本机 MCP 配置。请检查发行包中的 tools/aihub_mcp.py 与接入文档，不要使用其他电脑的绝对路径。</p>';
-        if(selected)get('mcp').innerHTML+=`<p>${esc(selected.verified?'已验证此接入方式':'需要在对应工具中验证')} · ${esc(selected.instructions)}</p>`;
-        get('mcp').innerHTML+=(state.limitations || []).map(v=>`<p class="caption-note">${esc(v)}</p>`).join('');
+      let registryItems=[],toolsLoaded=false;
+      function updateToolChoices(records){
+        registryItems=records;
+        for(const key of ['task-tool','source-tool']){
+          const selected=(!toolsLoaded&&restored?.draft?.[key])||get(key).value||'any';
+          get(key).innerHTML=Harness.options(records,{queue:key==='task-tool',emptyLabel:key==='task-tool'?'任意已启用工作端':'通用来源',emptyValue:'any',selected,extras:[]});
+          get(key).value=selected;
+        }
+        toolsLoaded=true;
       }
+      const registry=Harness.mount(el,{api,active,onRegistry:updateToolChoices,restored:restored?.harness});
       async function refresh() {
         const next=await api('/api/collaboration/status');if(!active())return;
         state=next || {};ready=state.available===true;
@@ -150,7 +154,7 @@
         if(!policyDirty){get('policy-enabled').checked=state.policy?.enabled===true;get('policy-days').value=String(state.policy?.days ?? 7);}
         const lastRun=state.policy?.last_run;
         get('policy-history').textContent=lastRun?.finished_at ? '最近检查：'+timeText(lastRun.finished_at)+' · 已回收 '+(lastRun.recycled ?? 0)+' 项'+(rows(lastRun.errors).length?' · '+rows(lastRun.errors).length+' 项未完成，原文件保留':'') : '尚无自动或手动回收记录。';
-        renderConfig();
+        await registry.refresh();if(!active())return;
         get('source-candidates').innerHTML='<h4>可登记的来源建议</h4><p class="caption-note">选择后填入上方表单；提交登记后再点击只读盘点。未登记的来源不会扫描。</p>'+rows(state.source_candidates).map((s,i)=>`<p><span class="pathline">${esc(s.label)} · ${esc(s.path)}</span> ${button('source-fill',i,'填入来源表单')}</p>`).join('');
         if(!get('source-results').innerHTML && state.inventory)get('source-results').innerHTML=inventoryHTML(state.inventory);
         get('clients').innerHTML=table(['客户端 / 工具','协议','最近心跳'],rows(state.clients).map(c=>`<tr><td>${esc(c.name || c.id)} · ${esc(c.tool)}<span class="file-sub">${esc(c.id)}</span></td><td>${esc(c.protocol_version)}</td><td>${esc(timeText(c.last_seen))}</td></tr>`),'尚无协议心跳。发现应用安装不代表已连接。');
@@ -166,13 +170,13 @@
         });};
       }
       const value=id=>get(id).value.trim();
-      form('task','task_create',()=>({project:value('task-project'),title:value('task-title'),description:value('task-description'),target_tool:value('task-tool')}),['task-title','task-description']);
+      form('task','task_create',()=>{const tool=value('task-tool');if(!Harness.canQueue(registryItems,tool))throw new Error('所选工作端已停用或不在当前登记中，请选择已启用的工作端。');return {project:value('task-project'),title:value('task-title'),description:value('task-description'),target_tool:tool};},['task-title','task-description']);
       form('memory','memory_propose',()=>{
         const scope=value('memory-scope'),project=value('memory-project');
         if(scope==='project' && !project)throw new Error('项目范围的记忆需要填写项目名称。');
         return {title:value('memory-title'),content:value('memory-content'),scope,project:scope==='project'?project:'',source_artifact_id:value('memory-source')};
       },['memory-title','memory-content']);
-      form('source','source_add',()=>({path:value('source-path'),label:value('source-label'),tool:value('source-tool')}),['source-path','source-label']);
+      form('source','source_add',()=>{const tool=value('source-tool');if(!Harness.enabled(registryItems,tool))throw new Error('请选择已启用的工作端，或使用通用来源。');return {path:value('source-path'),label:value('source-label'),tool};},['source-path','source-label']);
       get('search-form').onsubmit=event=>{event.preventDefault();return act(async()=>{const result=await post('memory_search',{query:value('search-query'),project:value('search-project')});if(active())get('search-results').innerHTML=memoriesHTML(result,false);});};
       get('policy-form').onsubmit=event=>{event.preventDefault();return act(async()=>{
         const days=Number(value('policy-days'));if(!Number.isInteger(days) || days<1 || days>365)throw new Error('保留天数应为 1 到 365 的整数。');
@@ -187,7 +191,6 @@
         await refresh();
       });
       get('refresh').onclick=()=>act(refresh);
-      get('mcp-tool').onchange=renderConfig;
       el.querySelectorAll('[data-co-tab]').forEach(n=>{n.onclick=()=>selectTab(n.dataset.coTab);});
       selectTab(params?.get?.('tab') || restored?.tab);restore(el,restored);el.dataset.coTask=restored?.selectedTask || '';
       await act(refresh);

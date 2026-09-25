@@ -9,7 +9,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from tools.aihub_mcp import Bridge, MAX_LINE, serve
+from tools.aihub_mcp import Bridge, MAX_LINE, TOOLS, BY_NAME, RPCError, serve, validate
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'tools' / 'aihub_mcp.py'
 
@@ -37,8 +37,14 @@ class Handler(BaseHTTPRequestHandler):
             result = {'items': [{'status': 'approved', 'content': '用户审核的长期记忆'}]}
         else:
             result = {'ok': True, 'received': data}
-        result['workspace_root'] = 'C:/fixture/AI'
-        self.send_response(self.server.reply_status)
+        result['workspace_root'] = self.server.workspace_root
+        status = self.server.reply_status
+        if self.path.endswith('client_heartbeat') and self.server.allowed_tools is not None:
+            if data.get('tool') not in self.server.allowed_tools:
+                status = 404
+            elif not self.server.allowed_tools[data['tool']]:
+                status = 403
+        self.send_response(status)
         if self.server.reply_status == 302:
             self.send_header('Location', 'http://example.invalid/leak')
         self.send_header('Content-Type', 'application/json')
@@ -52,6 +58,8 @@ class MCPTests(unittest.TestCase):
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         cls.server.reply_status = 200
         cls.server.calls = []
+        cls.server.workspace_root = 'C:/fixture/AI'
+        cls.server.allowed_tools = None
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
 
@@ -64,6 +72,8 @@ class MCPTests(unittest.TestCase):
     def setUp(self):
         self.server.calls.clear()
         self.server.reply_status = 200
+        self.server.workspace_root = 'C:/fixture/AI'
+        self.server.allowed_tools = None
 
     def run_stdio(self, messages, extra=()):
         wire = '\n'.join(json.dumps(item, ensure_ascii=False) if not isinstance(item, str)
@@ -188,13 +198,109 @@ class MCPTests(unittest.TestCase):
 
     def test_port_client_tool_validation_and_no_url_option(self):
         for values in ((0, 'test', 'codex'), (65536, 'test', 'codex'),
-                       (8765, '../other', 'codex'), (8765, 'test', 'other')):
+                       (8765, '../other', 'codex'), (8765, 'test', 'not.valid')):
             with self.assertRaises(ValueError):
                 Bridge(*values)
         result = subprocess.run([sys.executable, str(SCRIPT), '--client-id', 'test', '--tool', 'codex',
                                  '--url', 'http://example.invalid'], capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b'')
+
+    def test_custom_slug_stdio_initialization_heartbeat_and_business_read(self):
+        self.server.allowed_tools = {'studio-agent_2': True}
+        out, err = self.run_stdio([*initialization(), request(2, 'tools/list'),
+            request(3, 'tools/call', {'name': 'aihub_client_heartbeat'}),
+            request(4, 'tools/call', {'name': 'aihub_task_list', 'arguments': {'target_tool': 'studio-agent_2'}}),
+            request(5, 'tools/call', {'name': 'aihub_capability_list', 'arguments': {'tool': 'renderer-7'}})],
+            extra=('--tool', 'studio-agent_2'))
+        self.assertEqual(len(out[1]['result']['tools']), 17)
+        self.assertTrue(all(not item['result']['isError'] for item in out[2:]))
+        self.assertEqual([path.rsplit('/', 1)[-1] for path, _ in self.server.calls],
+                         ['client_heartbeat', 'task_list', 'capability_list'])
+        self.assertEqual(self.server.calls[0][1]['tool'], 'studio-agent_2')
+        self.assertNotIn('_workspace_root', self.server.calls[0][1])
+        self.assertEqual(self.server.calls[1][1]['target_tool'], 'studio-agent_2')
+        self.assertEqual(self.server.calls[2][1]['tool'], 'renderer-7')
+        self.assertTrue(all(body['client_id'] == 'test-codex' for _, body in self.server.calls))
+        self.assertTrue(all(body['_workspace_root'] == 'C:/fixture/AI' for _, body in self.server.calls[1:]))
+        self.assertEqual(err, '')
+
+    def test_custom_target_creation_handoff_and_presets_use_real_http(self):
+        out, _ = self.run_stdio([*initialization(),
+            request(2, 'tools/call', {'name': 'aihub_task_create', 'arguments': {
+                'project': 'demo', 'title': 'custom queue', 'target_tool': 'studio-worker'}}),
+            request(3, 'tools/call', {'name': 'aihub_task_handoff', 'arguments': {
+                'task_id': 'task1', 'lease_token': 'fixture-token', 'target_tool': 'renderer_2', 'summary': '交接'}}),
+            request(4, 'tools/call', {'name': 'aihub_task_list', 'arguments': {'target_tool': 'any'}})],
+            extra=('--tool', 'studio-agent'))
+        self.assertTrue(all(not item['result']['isError'] for item in out[1:]))
+        self.assertEqual([data.get('target_tool') for _, data in self.server.calls[1:]],
+                         ['studio-worker', 'renderer_2', 'any'])
+        for preset in TOOLS:
+            self.server.calls.clear()
+            out, _ = self.run_stdio([*initialization(), request(2, 'tools/call', {'name': 'aihub_task_list'})],
+                                    extra=('--tool', preset))
+            self.assertFalse(out[1]['result']['isError'])
+            self.assertEqual(self.server.calls[0][1]['tool'], preset)
+
+    def test_unknown_and_disabled_custom_harness_errors_stop_business_calls(self):
+        for allowed, status in (({}, 404), ({'studio-agent': False}, 403)):
+            with self.subTest(status=status):
+                self.server.calls.clear()
+                self.server.allowed_tools = allowed
+                out, err = self.run_stdio([*initialization(), request(2, 'tools/call',
+                    {'name': 'aihub_task_list'})], extra=('--tool', 'studio-agent'))
+                self.assertTrue(out[1]['result']['isError'])
+                self.assertIn('HTTP ' + str(status), out[1]['result']['content'][0]['text'])
+                self.assertIn('registration/enabled', out[1]['result']['content'][0]['text'])
+                self.assertEqual(len(self.server.calls), 1)
+                self.assertTrue(self.server.calls[0][0].endswith('client_heartbeat'))
+                self.assertNotIn('secret-lease', str(out))
+                self.assertEqual(err, '')
+
+    def test_slug_schema_and_runtime_validation_are_dynamic_but_bounded(self):
+        for name, key in (('task_create', 'target_tool'), ('task_list', 'target_tool'),
+                          ('task_handoff', 'target_tool'), ('capability_list', 'tool')):
+            schema = BY_NAME['aihub_' + name]['inputSchema']
+            self.assertNotIn('enum', schema['properties'][key])
+            self.assertEqual(schema['properties'][key]['maxLength'], 64)
+            for value in ('any', 'studio-agent_2', 'a' * 64, *TOOLS):
+                arguments = {key: value, **{required: 'fixture' for required in schema['required'] if required != key}}
+                validate(schema, arguments)
+            for value in ('', 'Studio', '../tool', 'a.b', '1tool', 'a' * 65, '工具', 'a b', 'a\n'):
+                arguments = {key: value, **{required: 'fixture' for required in schema['required'] if required != key}}
+                with self.subTest(tool=name, value=value), self.assertRaises(RPCError):
+                    validate(schema, arguments)
+        for value in ('studio-agent_2', 'a' * 64, *TOOLS):
+            self.assertEqual(Bridge(8765, 'local', value).tool, value)
+        for value in ('any', '', 'UPPER', 'a' * 65, 'a\n', '../agent', '工具'):
+            with self.subTest(identity=value), self.assertRaises(ValueError):
+                Bridge(8765, 'local', value)
+        result = subprocess.run([sys.executable, '-B', str(SCRIPT), '--client-id', 'test', '--tool', 'any'],
+                                input=b'', capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b'')
+
+    def test_custom_harness_identity_and_workspace_binding_cannot_be_overridden(self):
+        bridge = Bridge(self.server.server_port, 'custom-local', 'custom-agent')
+        for message in initialization():
+            bridge.handle(message)
+        first = bridge.handle(request(2, 'tools/call', {'name': 'aihub_task_list'}))
+        self.assertFalse(first['result']['isError'])
+        self.assertEqual(bridge.workspace_root, 'C:/fixture/AI')
+        for args in ({'client_id': 'other'}, {'tool': 'codex'}, {'_workspace_root': 'D:/other'}):
+            before = len(self.server.calls)
+            response = bridge.handle(request(3, 'tools/call', {'name': 'aihub_client_heartbeat', 'arguments': args}))
+            self.assertEqual(response['error']['code'], -32602)
+            self.assertEqual(len(self.server.calls), before)
+        self.server.workspace_root = 'D:/other'
+        response = bridge.handle(request(4, 'tools/call', {'name': 'aihub_client_heartbeat'}))
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('workspace changed', response['result']['content'][0]['text'])
+        self.assertEqual(bridge.workspace_root, 'C:/fixture/AI')
+        self.assertEqual(self.server.calls[-1][1]['_workspace_root'], 'C:/fixture/AI')
+        self.assertEqual(self.server.calls[-1][1]['client_id'], 'custom-local')
+        self.assertEqual(self.server.calls[-1][1]['tool'], 'custom-agent')
 
 
 if __name__ == '__main__':
