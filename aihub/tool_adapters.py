@@ -1,7 +1,8 @@
-"""Read-only local tool discovery and proposed project rules; never launch tools.
+"""Optional harness recipes, registered workspace status and proposed project rules.
 
-Detection is executable metadata, not a running session or sandbox health check.
-No user configuration, task history, credentials or registry values are read.
+Recipes never probe installed software. Status delegates to workspace registration
+and actual legacy collaboration evidence; native configuration and credentials
+are never read, and this module never launches tools.
 """
 import os
 from pathlib import Path
@@ -45,30 +46,23 @@ def _candidates(tool_id, cfg):
     return ([Path(found)] if found else []) + known[tool_id]
 
 
+def templates(cfg=None):
+    """Pure optional recipes; inspecting recipes never inspects installed software."""
+    rows = [{'id': identifier, 'name': name, 'template': True,
+             'registration_origin': 'template', 'connection_mode': 'mcp_stdio',
+             'launch_mode': 'manual_cli' if identifier == 'codex' else 'manual_project',
+             'rules_support': rule, 'notes': [note, '可选接入配方；需明确登记后才能用于此工作区。']}
+            for identifier, (name, rule, note) in _TOOLS.items()]
+    rows.append({'id': 'qoder', 'name': 'Qoder', 'template': True,
+                 'registration_origin': 'template', 'connection_mode': 'mcp_stdio',
+                 'launch_mode': 'manual_handoff', 'rules_support': 'AIHub handoff only',
+                 'notes': ['通用接入配方；原生配置和规则格式尚未核实，登记后仅生成 AIHub 专属交接文件。']})
+    return rows
+
+
 def _builtin_status(cfg):
-    """Return tool metadata. available means an entry exists, not controlled launch."""
-    result = []
-    for tool_id, (name, rule, note) in _TOOLS.items():
-        executable = None
-        for candidate in _candidates(tool_id, cfg):
-            try:
-                if candidate.is_file():
-                    executable = str(candidate)
-                    break
-            except OSError:
-                continue
-        detected = executable is not None
-        result.append({
-            'id': tool_id, 'name': name, 'detected': detected, 'available': detected,
-            'launch_mode': 'manual_cli' if tool_id == 'codex' else 'manual_project',
-            'rules_support': rule,
-            'enforcement': 'soft_rules_only',
-            'executable': executable,
-            'notes': [note, '程序入口存在不代表正在运行、已载入项目规则或已启用沙箱。',
-                      'AI Hub 不会自动启动工具、修改全局配置或隔离既有会话。'
-                      if detected else '未找到已知入口；可手动选择项目，安装位置尚未验证。'],
-        })
-    return result
+    """Compatibility accessor for recipe metadata, not actual workspace tools."""
+    return templates(cfg)
 
 
 def status(cfg):

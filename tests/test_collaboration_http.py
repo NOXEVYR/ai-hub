@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 import server
-from aihub import config, collaboration as core, collaboration_maintenance as maintenance
+from aihub import harnesses, config, collaboration as core, collaboration_maintenance as maintenance
 from aihub import collaboration_api
 
 
@@ -33,6 +33,9 @@ class CollaborationHTTP(unittest.TestCase):
             patch = mock.patch.object(target, name, value)
             patch.start()
             self.addCleanup(patch.stop)
+        # This fixture explicitly opts into the four compatibility recipes.
+        for identifier in harnesses.BUILTIN_IDS:
+            harnesses.save(self.cfg, {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         class QuietHandler(server.Handler):
             def log_message(self, *_args):
                 pass

@@ -26,11 +26,18 @@ test('project choices follow registered enabled tools including manual handoff w
   assert(!h.el.innerHTML.includes('data-ws-project-tool="codex"'));
   assert.match(h.el.innerHTML,/已停用/);
 });
+
+test('fresh workspace has no invented project tools and guides the user to explicit registration',async()=>{
+  const h=harness({'/api/workspace/status':{...status(),tools:[],templates:[{id:'codex',name:'Codex'}]}});await h.page(h.el);
+  assert.equal(h.tools.length,0);assert(!h.el.innerHTML.includes('data-ws-project-tool="codex"'));assert.match(h.el.innerHTML,/尚无已启用的登记工作端/);
+  h.key('project-name').value='NewProject';await h.projectSubmit();assert.match(h.key('project-error').textContent,/至少选择一个/);assert(!h.requests.some(r=>r.url==='/api/workspace/project/preview'));
+});
 function harness(overrides = {}) {
   const nodes = new Map(), requests = [], toasts = [], add = {dataset:{wsAdd:'0'},textContent:''};
-  const tools=['codex','zcode','dsh','workbuddy'].map(id=>({dataset:{wsProjectTool:id},checked:false}));
+  const tools=[],toolNodes=new Map();
+  const choices=()=>{tools.splice(0,tools.length,...[...el.innerHTML.matchAll(/data-ws-project-tool="([^"]+)"/g)].map(([,id])=>{if(!toolNodes.has(id))toolNodes.set(id,{dataset:{wsProjectTool:id},checked:false});return toolNodes.get(id);}));return tools;};
   const node = selector => {if (!nodes.has(selector)) nodes.set(selector,{value:'',innerHTML:'',textContent:'',checked:false,disabled:false,isConnected:true});return nodes.get(selector);};
-  const el = {isConnected:true,innerHTML:'',querySelector:node,querySelectorAll:selector => selector === '[data-ws-add]' ? [add] : selector === '[data-ws-project-tool]' ? tools : []};
+  const el = {isConnected:true,innerHTML:'',querySelector:node,querySelectorAll:selector => selector === '[data-ws-add]' ? [add] : selector === '[data-ws-project-tool]' ? choices() : []};
   const defaults = {'/api/workspace/status':status(),'/api/overview':{scan_at:'2026-09-12 12:00'},'/api/jobs':{jobs:[]},
     '/api/workspace/preview':preview(),'/api/workspace/apply':{applied:true,root:'D:/Studio',scan_required:true,status:status()},'/api/scan/start':{started:true},
     '/api/workspace/project/preview':projectPreview(),'/api/workspace/project/apply':{applied:true,root:'D:/Studio/40_Projects/Film',prompt_path:'D:/Studio/40_Projects/Film/TASK.md',tools:['codex'],output_root_added:true}};
@@ -235,7 +242,7 @@ test('project draft participates in in-memory navigation snapshots',async()=>{
   await h.page(h.el,undefined,snapshot);assert.equal(h.key('project-name').value,'Draft');assert(h.tools[3].checked);
 });
 
-test('four tools default selected, empty selection is blocked, and unmanaged roots require workspace apply',async()=>{
+test('registered enabled tools default selected, empty selection is blocked, and unmanaged roots require workspace apply',async()=>{
   const h=harness();await h.page(h.el);assert(h.tools.every(c=>c.checked));
   h.key('project-name').value='Film';await h.projectSubmit();
   assert.deepEqual(h.requests.at(-1).body.tools,['codex','zcode','dsh','workbuddy']);

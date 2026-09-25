@@ -103,13 +103,20 @@ class WorkspaceHTTP(unittest.TestCase):
         self.assertTrue(result['applied'])
         self.assertTrue(result['status']['managed'])
         self.assertEqual(self.shared_cfg, self.cfg)
+        self.assertEqual(self.ok('/api/workspace/status')['tools'], [])
+        # User-selected recipes are explicitly registered through the real HTTP API.
+        for identifier in ['codex', 'zcode', 'dsh', 'workbuddy']:
+            body = {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio', '_workspace_root': str(self.root)}
+            if identifier == 'codex':
+                body['executable'] = str(self.base / 'fake-codex.cmd')
+            self.ok('/api/harnesses/save', body)
         return result
 
     def test_new_workspace_four_tool_project_gallery_and_shared_config(self):
         self.create_workspace()
         self.checks.append('new workspace preview/apply and shared cfg synchronized')
         before = self.ok('/api/workspace/status')
-        self.assertEqual([t['id'] for t in before['tools']], ['codex', 'zcode', 'dsh', 'workbuddy'])
+        self.assertEqual({t['id'] for t in before['tools']}, {'codex', 'zcode', 'dsh', 'workbuddy'})
         self.assertTrue(before['tools'][0]['detected'])
         self.assertFalse(before['tools'][1]['available'])
         stale = self.ok('/api/workspace/preview', {'mode': 'connect', 'root': str(self.root)})

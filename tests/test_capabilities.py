@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from aihub import capabilities as cap, collaboration, config
+from aihub import capabilities as cap, collaboration, config, harnesses
 
 
 class CapabilityTests(unittest.TestCase):
@@ -35,6 +35,9 @@ class CapabilityTests(unittest.TestCase):
             'hints': {'cost': '未知，提供方另计', 'quality': '未实测'}}
 
     def heartbeat(self, client, tool='codex', cfg=None):
+        # Explicit per-workspace fixture registration, including cross-root tests.
+        if tool not in harnesses.allowed_ids(cfg or self.cfg, include_disabled=True):
+            harnesses.save(cfg or self.cfg, {'id': tool, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         return collaboration.execute(cfg or self.cfg, 'client_heartbeat', {
             'client_id': client, 'tool': tool, 'name': client, 'protocol_version': 1})
 
@@ -150,6 +153,7 @@ class CapabilityTests(unittest.TestCase):
                         {'tool': 'codex', 'target_tool': 'codex'}):
             items = cap.execute(self.cfg, 'capability_list', filters, actor='mcp')['items']
             self.assertEqual([i['client_id'] for i in items], ['alice'])
+        harnesses.save(self.cfg, {'id': 'dsh', 'revision': 0, 'connection_mode': 'mcp_stdio'})
         self.assertEqual(cap.catalog(self.cfg, {'tool': 'dsh'})['items'], [])
         for filters in ({'tool': 'unknown'}, {'tool': 'codex', 'target_tool': 'workbuddy'}):
             with self.assertRaises(ValueError):

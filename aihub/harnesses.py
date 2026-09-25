@@ -111,6 +111,52 @@ def _stored(cfg):
                         'SELECT id,revision,metadata FROM harnesses WHERE root=? ORDER BY id', (config._key(root),))}
 
 
+def _legacy_usage(cfg):
+    """Read actual pre-registry use, never manufacture registrations or create a DB."""
+    root = _workspace(cfg)
+    if root is None:
+        return set()
+    path = Path(config.DATA_DIR) / 'collaboration.sqlite3'
+    if not os.path.lexists(path):
+        return set()
+    config._check_ancestors(str(path.parent))
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        candidate = Path(str(path) + suffix)
+        if os.path.lexists(candidate):
+            info = candidate.lstat()
+            if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('历史协作数据库不能是链接或特殊文件。')
+    used = set()
+    with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=30)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, column in (('clients', 'tool'), ('tasks', 'target_tool')):
+            if table not in tables:
+                continue
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(' + table + ')')}
+            if not {'root', column} <= columns:
+                continue
+            used.update(row[0] for row in connection.execute(
+                'SELECT DISTINCT ' + column + ' FROM ' + table + ' WHERE root=?', (config._key(root),))
+                if row[0] in BUILTIN_IDS)
+    return used
+
+
+def _registrations(cfg):
+    from . import tool_adapters
+    legacy = {identifier: dict(_defaults(identifier, tool_adapters._TOOLS[identifier][0]),
+                              revision=0, registration_origin='legacy_usage')
+              for identifier in _legacy_usage(cfg)}
+    legacy.update({identifier: dict(metadata, registration_origin='explicit')
+                   for identifier, metadata in _stored(cfg).items()})
+    return legacy
+
+
+def templates(cfg=None):
+    """Optional recipes carry no installation, registration or connection claims."""
+    from . import tool_adapters
+    return tool_adapters.templates(cfg)
+
+
 def _path_evidence(value):
     """Metadata only: no file contents, executable version probes or native config reads."""
     if not value:
@@ -162,7 +208,8 @@ def _defaults(identifier, name):
 
 
 def _present(cfg, identifier, metadata, builtin=None):
-    configured = metadata is not None
+    origin = metadata.get('registration_origin', 'explicit') if metadata else 'legacy_usage'
+    configured = origin == 'explicit'
     source = dict(metadata or _defaults(identifier, builtin['name']))
     registered = source.get('executable', '')
     executable = registered or ((builtin or {}).get('executable') or '')
@@ -184,8 +231,8 @@ def _present(cfg, identifier, metadata, builtin=None):
              'id': identifier, 'revision': revision, 'enabled': source['enabled'],
              'connection_mode': source['connection_mode'], 'paths': evidence}
     return {**(builtin or {}), 'id': identifier, 'name': source['name'],
-            'builtin': identifier in BUILTIN_IDS, 'enabled': source['enabled'],
-            'configured': configured, 'revision': revision, 'connection_mode': source['connection_mode'],
+            'builtin': identifier in BUILTIN_IDS, 'template': False, 'enabled': source['enabled'],
+            'configured': configured, 'registered': True, 'registration_origin': origin, 'revision': revision, 'connection_mode': source['connection_mode'],
             'executable': executable or None, 'registered_executable': registered,
             'work_dir': source.get('work_dir', ''), 'config_path': source.get('config_path', ''),
             'user_notes': source.get('notes', ''), 'notes': notes,
@@ -197,18 +244,15 @@ def _present(cfg, identifier, metadata, builtin=None):
 
 
 def list_tools(cfg):
-    from . import tool_adapters
-    stored = _stored(cfg)
-    builtin = tool_adapters._builtin_status(cfg)
-    rows = [_present(cfg, item['id'], stored.get(item['id']), item) for item in builtin]
-    rows.extend(_present(cfg, identifier, metadata) for identifier, metadata in stored.items() if identifier not in BUILTIN_IDS)
-    return rows
+    recipes = {item['id']: item for item in templates(cfg)}
+    registrations = _registrations(cfg)
+    return [_present(cfg, identifier, registrations[identifier], recipes.get(identifier))
+            for identifier in sorted(registrations)]
 
 
 def allowed_ids(cfg, include_disabled=False):
-    states = dict.fromkeys(BUILTIN_IDS, True)
-    states.update({identifier: item['enabled'] for identifier, item in _stored(cfg).items()})
-    return {identifier for identifier, enabled in states.items() if include_disabled or enabled}
+    return {identifier for identifier, record in _registrations(cfg).items()
+            if include_disabled or record['enabled']}
 
 
 def get(cfg, identifier):
@@ -226,8 +270,8 @@ def save(cfg, body):
     revision = body.get('revision')
     if type(revision) is not int or revision < 0:
         raise ValueError('保存须带当前 revision；新增登记使用 0。')
-    from . import tool_adapters
-    builtin_name = tool_adapters._TOOLS.get(identifier, (None,))[0]
+    recipe = next((item for item in templates(cfg) if item['id'] == identifier), None)
+    builtin_name = recipe['name'] if recipe else None
     with _write_store(cfg) as (connection, root):
         previous = connection.execute('SELECT revision,metadata FROM harnesses WHERE root=? AND id=?', (root, identifier)).fetchone()
         expected = previous['revision'] if previous else 0
@@ -243,87 +287,21 @@ def save(cfg, body):
             raise ValueError('接入方式只能为 mcp_stdio 或 manual。')
         if type(metadata.get('enabled')) is not bool:
             raise ValueError('启用状态须为布尔值。')
-        if previous is None and identifier not in BUILTIN_IDS:
-            count = connection.execute("SELECT COUNT(*) FROM harnesses WHERE root=? AND id NOT IN ('codex','zcode','dsh','workbuddy')", (root,)).fetchone()[0]
-            if count + len(BUILTIN_IDS) >= MAX_TOOLS:
-                raise ValueError('每个工作环境最多登记 128 个工作端（含四个内置模板）。')
+        if previous is None:
+            existing = {row[0] for row in connection.execute('SELECT id FROM harnesses WHERE root=?', (root,))}
+            existing.update(_legacy_usage(cfg))
+            if identifier not in existing and len(existing) >= MAX_TOOLS:
+                raise ValueError('每个工作环境最多登记 128 个工作端（含实际使用过的兼容登记）。')
         connection.execute('INSERT INTO harnesses(root,id,revision,metadata) VALUES(?,?,?,?) '
                            'ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision,metadata=excluded.metadata',
                            (root, identifier, expected + 1, json.dumps(metadata, ensure_ascii=False)))
-    builtin = next((item for item in tool_adapters._builtin_status(cfg) if item['id'] == identifier), None)
-    return _present(cfg, identifier, dict(metadata, revision=expected + 1), builtin)
-
-
-_DISCOVERY_TOOLS = {
-    'codex': ('Codex', ('codex',)), 'zcode': ('ZCode', ('zcode',)),
-    'dsh': ('DeepSeek Harness', ('dsh',)), 'workbuddy': ('WorkBuddy', ('workbuddy',)),
-    'claude': ('Claude Code', ('claude',)), 'gemini': ('Gemini CLI', ('gemini',)),
-    'opencode': ('OpenCode', ('opencode',)), 'aider': ('Aider', ('aider',)),
-}
+    return _present(cfg, identifier, dict(metadata, revision=expected + 1, registration_origin='explicit'), recipe)
 
 
 def discover(cfg):
-    """Fixed filenames in bounded directories. No recursive scan or registry writes."""
-    from . import tool_adapters
-    registered = set(_stored(cfg)) | set(BUILTIN_IDS)
-    path_parts = [item for item in os.environ.get('PATH', '').split(os.pathsep) if item]
-    directories = []
-    for value in path_parts[:MAX_PATH_DIRS]:
-        if os.path.isabs(value) and not value.startswith(('\\\\', '//')):
-            candidate = os.path.abspath(value)
-            if candidate not in directories:
-                directories.append(candidate)
-    home = Path.home()
-    appdata = Path(os.environ.get('APPDATA') or home / 'AppData/Roaming')
-    local = Path(os.environ.get('LOCALAPPDATA') or home / 'AppData/Local')
-    directories.extend(map(str, (appdata / 'npm', home / '.local/bin', home / 'bin')))
-    workspace = _workspace(cfg)
-    extensions = ('.exe', '.cmd', '.ps1', '.bat', '') if os.name == 'nt' else ('',)
-    checks = 0
-    truncated = len(path_parts) > MAX_PATH_DIRS
-    seen, items, per_tool = set(), [], []
-    for identifier, (name, commands) in _DISCOVERY_TOOLS.items():
-        candidates = [(Path(directory) / (command + extension), 'path_or_user_directory')
-                      for directory in directories for command in commands for extension in extensions]
-        for folder in {name.replace(' ', ''), name, identifier}:
-            for extension in extensions:
-                for command in commands:
-                    candidates.append((local / 'Programs' / folder / (command + extension), 'known_user_application_directory'))
-                    if workspace:
-                        for app_folder in ('10_Apps', 'Apps'):
-                            candidates.append((Path(workspace) / app_folder / folder / (command + extension), 'workspace_application_directory'))
-        if identifier in BUILTIN_IDS:
-            candidates = [(item, 'builtin_template_path') for item in tool_adapters._candidates(identifier, cfg)] + candidates
-        per_tool.append((identifier, name, iter(candidates)))
-    # Interleave tools so a large PATH cannot consume the budget before later tools.
-    while per_tool and checks < MAX_DISCOVERY_CHECKS:
-        remaining = []
-        for identifier, name, candidates in per_tool:
-            try:
-                path, scope = next(candidates)
-            except StopIteration:
-                continue
-            remaining.append((identifier, name, candidates))
-            if not path.is_absolute() or str(path).startswith(('\\\\', '//')):
-                continue
-            key = config._key(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            if checks >= MAX_DISCOVERY_CHECKS:
-                truncated = True
-                break
-            checks += 1
-            if _path_evidence(path)['state'] != 'file':
-                continue
-            items.append({'suggested_id': identifier, 'id': identifier, 'name': name,
-                          'executable': str(path), 'builtin': identifier in BUILTIN_IDS,
-                          'registered': identifier in registered, 'evidence': 'file_metadata_only',
-                          'scan_scope': scope, 'connection_mode': 'mcp_stdio', 'verified': False})
-        per_tool = remaining
-    if per_tool:
-        truncated = True
-    return {'items': items, 'truncated': truncated, 'checks': checks,
-            'scan_scope': {'path_directories_limit': MAX_PATH_DIRS, 'candidate_limit': MAX_DISCOVERY_CHECKS,
-                           'known_user_directories': True, 'workspace_apps': bool(workspace),
-                           'recursive': False, 'reads_configuration_contents': False, 'registers_automatically': False}}
+    """Attach registry metadata to independent, read-only installation evidence."""
+    from . import harness_discovery
+    result = harness_discovery.discover(cfg, max_checks=MAX_DISCOVERY_CHECKS, max_path_dirs=MAX_PATH_DIRS)
+    registered = allowed_ids(cfg, include_disabled=True)
+    return dict(result, items=[dict(item, registered=(item.get('suggested_id') or item.get('id')) in registered)
+                               for item in result.get('items', [])])

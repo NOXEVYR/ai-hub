@@ -1,20 +1,22 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const ui=require('../frontend/harnesses.js'),collaboration=require('../frontend/collaboration.js');
-const base=()=>[{id:'codex',name:'Codex',builtin:true,enabled:true,connection_mode:'mcp_stdio',revision:0,configured:false,detected:true,recent_heartbeat:false,invocation_verified:false}];
+const base=()=>[{id:'codex',name:'Codex',builtin:true,registration_origin:'legacy_usage',enabled:true,connection_mode:'mcp_stdio',revision:0,configured:false,detected:true,recent_heartbeat:false,invocation_verified:false}];
+const recipes=()=>['codex','zcode','dsh','workbuddy'].map(id=>({id,name:id==='codex'?'Codex':id,template:true,registration_origin:'template',connection_mode:'mcp_stdio',rules_support:'AGENTS.md'}));
 const submit=()=>({preventDefault(){}});
-function harness({records=base(),handler,restored,root='D:/Studio'}={}){
+function harness({records=base(),templates=recipes(),handler,restored,root='D:/Studio'}={}){
   const nodes=new Map(),buttons=new Map(),requests=[];let items=structuredClone(records);
   const get=s=>{if(!nodes.has(s))nodes.set(s,{id:s.slice(1),value:s==='#co-task-tool'||s==='#co-source-tool'?'any':'',type:s==='#hc-enabled'?'checkbox':'text',checked:false,innerHTML:'',textContent:'',hidden:false,disabled:false,dataset:{},focus(){this.focused=true;},setAttribute(){}});return nodes.get(s);};
   const actionNodes=()=>[...get('#hc-registry').innerHTML.matchAll(/data-hc-action="([^"]+)" data-hc-id="([^"]+)"/g)].map(([,action,id])=>{const key=action+':'+id;if(!buttons.has(key))buttons.set(key,{dataset:{hcAction:action,hcId:id},disabled:false});return buttons.get(key);});
   const candidateNodes=()=>[...get('#hc-candidates').innerHTML.matchAll(/data-hc-candidate="([^"]+)"/g)].map(([,id])=>{const key='candidate:'+id;if(!buttons.has(key))buttons.set(key,{dataset:{hcCandidate:id},disabled:false});return buttons.get(key);});
-  const el={isConnected:true,dataset:{},innerHTML:'',classList:{add(){}},querySelector:get,querySelectorAll(s){if(s==='[data-hc-action]')return actionNodes();if(s==='[data-hc-candidate]')return candidateNodes();return[];}};
-  const api=async(url,opts)=>{const body=opts?.body;requests.push({url,body});if(handler){const value=await handler(url,body);if(value!==undefined)return value;}if(url==='/api/harnesses')return{items:structuredClone(items),root,templates:base()};if(url==='/api/harnesses/save'){assert.equal(body._workspace_root,root);const old=items.find(x=>x.id===body.id);assert.equal(body.revision,old?.revision||0);const record={...old,...body,root,user_notes:body.notes,registered_executable:body.executable,configured:true,revision:(old?.revision||0)+1};items=items.filter(x=>x.id!==record.id).concat(record);return record;}if(url.startsWith('/api/harnesses/check?'))return structuredClone(items.find(x=>x.id===new URLSearchParams(url.split('?')[1]).get('id')));if(url==='/api/harnesses/discover')return{items:[{suggested_id:'quick-agent',name:'Quick Agent',executable:'C:/Tools/quick.exe',evidence:['入口存在']}],scan_scope:['PATH','开始菜单'],truncated:false};if(url.startsWith('/api/harnesses/config?')){const p=new URLSearchParams(url.split('?')[1]);return{tool_id:p.get('id'),client_id:p.get('client_id'),instructions:'请按客户端格式填写',config:{mcpServers:{aihub:{command:'C:/Python/python.exe',args:['bridge.py','--tool',p.get('id'),'--client-id',p.get('client_id')]}}}};}if(url.endsWith('/status'))return{available:true,root,tasks:[],artifacts:[],memories:[],clients:[],policy:{enabled:false,days:7}};return{items:[]};};
-  return{el,requests,key:id=>get('#hc-'+id),co:id=>get('#co-'+id),items:()=>items,action:(action,id)=>buttons.get(action+':'+id),candidate:id=>buttons.get('candidate:'+id),page:()=>collaboration.createPage({api})(el,new URLSearchParams({tab:'connect'}),restored),save:()=>get('#hc-form').onsubmit(submit())};
+  const templateNodes=()=>[...get('#hc-templates').innerHTML.matchAll(/data-hc-template="([^"]+)"/g)].map(([,id])=>{const key='template:'+id;if(!buttons.has(key))buttons.set(key,{dataset:{hcTemplate:id},disabled:false});return buttons.get(key);});
+  const el={isConnected:true,dataset:{},innerHTML:'',classList:{add(){}},querySelector:get,querySelectorAll(s){if(s==='[data-hc-action]')return actionNodes();if(s==='[data-hc-candidate]')return candidateNodes();if(s==='[data-hc-template]')return templateNodes();return[];}};
+  const api=async(url,opts)=>{const body=opts?.body;requests.push({url,body});if(handler){const value=await handler(url,body);if(value!==undefined)return value;}if(url==='/api/harnesses')return{items:structuredClone(items),root,templates:structuredClone(templates)};if(url==='/api/harnesses/save'){assert.equal(body._workspace_root,root);const old=items.find(x=>x.id===body.id);assert.equal(body.revision,old?.revision||0);const record={...old,...body,root,user_notes:body.notes,registered_executable:body.executable,configured:true,registration_origin:'explicit',revision:(old?.revision||0)+1};items=items.filter(x=>x.id!==record.id).concat(record);return record;}if(url.startsWith('/api/harnesses/check?'))return structuredClone(items.find(x=>x.id===new URLSearchParams(url.split('?')[1]).get('id')));if(url==='/api/harnesses/discover')return{items:[{suggested_id:'quick-agent',name:'Quick Agent',executable:'C:/Tools/quick.exe',evidence:['入口存在']}],scan_scope:['PATH','开始菜单'],truncated:false};if(url.startsWith('/api/harnesses/config?')){const p=new URLSearchParams(url.split('?')[1]);return{tool_id:p.get('id'),client_id:p.get('client_id'),instructions:'请按客户端格式填写',config:{mcpServers:{aihub:{command:'C:/Python/python.exe',args:['bridge.py','--tool',p.get('id'),'--client-id',p.get('client_id')]}}}};}if(url.endsWith('/status'))return{available:true,root,tasks:[],artifacts:[],memories:[],clients:[],policy:{enabled:false,days:7}};return{items:[]};};
+  return{el,requests,key:id=>get('#hc-'+id),co:id=>get('#co-'+id),items:()=>items,action:(action,id)=>buttons.get(action+':'+id),candidate:id=>buttons.get('candidate:'+id),template:id=>buttons.get('template:'+id),page:()=>collaboration.createPage({api})(el,new URLSearchParams({tab:'connect'}),restored),save:()=>get('#hc-form').onsubmit(submit())};
 }
 
-test('manual registration immediately populates dynamic task and report selections with no invented connection',async()=>{
-  const h=harness();await h.page();h.key('new').onclick();h.key('id').value='quick-agent';h.key('name').value='Quick Agent';h.key('executable').value='C:/Tools/quick.exe';h.key('notes').value='文档工作端';await h.save();
+test('explicit MCP registration populates dynamic task and report selections with no invented connection',async()=>{
+  const h=harness();await h.page();h.key('new').onclick();h.key('id').value='quick-agent';h.key('name').value='Quick Agent';h.key('executable').value='C:/Tools/quick.exe';h.key('notes').value='文档工作端';h.key('connection_mode').value='mcp_stdio';await h.save();
   const request=h.requests.find(r=>r.url.endsWith('/save'));assert.equal(request.body.revision,0);assert.equal(request.body._workspace_root,'D:/Studio');assert.equal(request.body.connection_mode,'mcp_stdio');assert(!('args' in request.body));assert(!('env' in request.body));
   assert.match(h.co('task-tool').innerHTML,/Quick Agent/);assert.match(h.co('source-tool').innerHTML,/Quick Agent/);assert.match(h.key('registry').innerHTML,/已登记/);assert.match(h.key('message').textContent,/以实际证据为准/);
   h.co('task-tool').value='quick-agent';h.co('task-project').value='Film';h.co('task-title').value='整理材料';await h.co('task-form').onsubmit(submit());assert(h.requests.some(r=>r.url.endsWith('/task_create')&&r.body.target_tool==='quick-agent'));
@@ -103,4 +105,44 @@ test('list toggles never promote a stale editor revision over an external update
   assert.equal(h.items()[0].revision,2);assert.equal(h.items()[0].name,'external name');assert.equal(h.items()[0].enabled,false);
   assert.equal(h.key('revision').value,'0');assert.equal(h.key('name').value,'stale local name');await h.save();
   assert.equal(h.items()[0].name,'external name');assert.equal(h.items()[0].revision,2);assert.match(h.key('message').textContent,/草稿已保留/);
+});
+
+test('fresh workspace keeps recipes separate from registered tools and every real tool selector',async()=>{
+  const h=harness({records:[]});await h.page();
+  assert.match(h.key('registry').innerHTML,/已登记工作端 · 0 项/);assert.match(h.key('registry').innerHTML,/新工作环境的正常状态/);
+  assert.match(h.key('templates').innerHTML,/<details class="hc-templates">/);assert.match(h.key('templates').innerHTML,/不代表已安装、已登记或已连接/);
+  for(const id of ['codex','zcode','dsh','workbuddy']){
+    assert(!h.key('registry').innerHTML.includes(id));assert(!h.co('task-tool').innerHTML.includes('value="'+id+'"'));assert(!h.co('source-tool').innerHTML.includes('value="'+id+'"'));assert(!h.key('config-tool').innerHTML.includes('value="'+id+'"'));
+  }
+  h.key('config-tool').value='codex';h.key('client-id').value='bogus';await h.key('config-load').onclick();assert(!h.requests.some(r=>r.url.startsWith('/api/harnesses/config?')));
+  assert.equal(h.requests.filter(r=>r.url.startsWith('/api/harnesses')&&r.body).length,0);
+});
+
+test('template is a manual draft until explicit save and then enters project/report choices without a MCP queue',async()=>{
+  const h=harness({records:[]});await h.page();h.template('0').onclick();
+  assert.equal(h.key('id').value,'codex');assert.equal(h.key('connection_mode').value,'manual');assert.equal(h.key('enabled').checked,true);assert.equal(h.items().length,0);assert.equal(h.requests.filter(r=>r.url.startsWith('/api/harnesses')&&r.body).length,0);
+  assert(!h.co('source-tool').innerHTML.includes('value="codex"'));h.key('cancel').onclick();h.template('0').onclick();await h.save();
+  assert.equal(h.items()[0].configured,true);assert.equal(h.items()[0].registration_origin,'explicit');assert.match(h.co('source-tool').innerHTML,/value="codex"/);assert(!h.co('task-tool').innerHTML.includes('value="codex"'));
+  assert.match(h.key('registry').innerHTML,/已登记工作端 · 1 项/);assert(!h.key('registry').innerHTML.includes('协议调用已验证'));
+});
+
+test('manual add defaults to manual and legacy usage is preserved without claiming explicit registration',async()=>{
+  const h=harness();await h.page();assert.match(h.key('registry').innerHTML,/历史使用记录 · 1 项/);assert.match(h.key('registry').innerHTML,/尚未显式登记/);assert.match(h.key('registry').innerHTML,/历史使用 · 尚未登记/);
+  h.key('new').onclick();assert.equal(h.key('connection_mode').value,'manual');
+  h.action('edit','codex').onclick();assert.equal(h.key('connection_mode').value,'mcp_stdio');await h.save();assert.match(h.key('registry').innerHTML,/已登记工作端 · 1 项/);assert(!h.key('registry').innerHTML.includes('历史使用记录'));
+});
+
+test('multi-source discovery exposes running-process limits without connection claims; same slug paths keep separate drafts',async()=>{
+  const h=harness({records:[],handler:url=>url==='/api/harnesses/discover'?{items:[
+    {suggested_id:'qoder',name:'Qoder',executable:'C:/First/Qoder.exe',connection_mode:'mcp_stdio',running:true,process_count:2,evidence_sources:['running_process','app_paths'],evidence:['路径已核对']},
+    {suggested_id:'qoder',name:'Qoder',executable:'D:/Second/Qoder.exe',running:false,evidence_sources:['common_location']}
+  ],sources:{running_process:{status:'partial',checked:20,limited:true,truncated:true}},limitations:['部分进程映像无法读取'],scan_scope:['运行进程','应用路径'],truncated:true}:undefined});await h.page();await h.key('discover').onclick();
+  const html=h.key('candidates').innerHTML;assert.match(html,/运行进程 · 系统应用路径/);assert.match(html,/2 个（不代表 MCP 在线）/);assert.match(html,/部分进程映像无法读取/);assert.match(html,/可见范围受限/);assert(!html.includes('近期连接'));assert(!html.includes('协议调用已验证'));
+  h.candidate('0').onclick();assert.equal(h.key('connection_mode').value,'manual');h.key('notes').value='第一安装草稿';h.candidate('1').onclick();assert.equal(h.key('executable').value,'D:/Second/Qoder.exe');assert.equal(h.key('notes').value,'');h.candidate('0').onclick();assert.equal(h.key('notes').value,'第一安装草稿');assert.equal(h.requests.filter(r=>r.url.startsWith('/api/harnesses')&&r.body).length,0);
+});
+
+test('discovery may be empty or limited and cannot replace candidates after workspace switch',async()=>{
+  let resolve,root='D:/Studio';const h=harness({records:[],handler:url=>url==='/api/harnesses'?{items:[],templates:recipes(),root}:url==='/api/harnesses/discover'?new Promise(r=>{resolve=r;}):undefined});await h.page();const pending=h.key('discover').onclick();await h.key('discover').onclick();assert.equal(h.requests.filter(r=>r.url.endsWith('/discover')).length,1);
+  root='E:/Other';await h.key('refresh').onclick();resolve({items:[{suggested_id:'stale',name:'Old candidate'}]});await pending;assert(!h.key('candidates').innerHTML.includes('Old candidate'));assert.match(h.key('candidates').innerHTML,/重新发现/);assert.equal(h.key('discover').disabled,false);
+  const empty=harness({records:[],handler:url=>url==='/api/harnesses/discover'?{items:[],limitations:['运行进程源不可用']}:undefined});await empty.page();await empty.key('discover').onclick();assert.match(empty.key('candidates').innerHTML,/本次未找到候选/);assert.match(empty.key('candidates').innerHTML,/仍可手动/);assert.match(empty.key('candidates').innerHTML,/运行进程源不可用/);
 });

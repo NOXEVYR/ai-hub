@@ -28,7 +28,8 @@ def status(cfg):
     cfg = copy.deepcopy(cfg)
     result = collaboration.status(cfg)
     tools = harness_api.list_tools(cfg)['items']
-    result.update(mcp_config=integration_config(cfg), tools=tools,
+    connected = [item for item in tools if item['enabled'] and item['connection_mode'] == 'mcp_stdio']
+    result.update(mcp_config=integration_config(cfg, connected[0]['id']) if connected else None, tools=tools,
                   integrations=[{'tool': item['id'], 'mode': 'manual_mcp', 'verified': False,
                     'mcp_config': integration_config(cfg, item['id']),
                     'instructions': '将此 stdio 配置加入支持 MCP 的工具。实际接入以客户端心跳为准；现有会话不会自动切换目录。'}

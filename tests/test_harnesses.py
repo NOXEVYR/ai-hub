@@ -1,5 +1,6 @@
 """Isolated registry and bounded discovery tests; never inspect native client data."""
 import copy
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
-from aihub import config, harnesses, tool_adapters
+from aihub import config, collaboration, harnesses, tool_adapters
 
 
 class HarnessTests(unittest.TestCase):
@@ -40,13 +41,128 @@ class HarnessTests(unittest.TestCase):
     def test_listing_unconfigured_and_managed_roots_never_creates_storage(self):
         for cfg in ({}, {'ai_root': str(self.root)}, self.cfg):
             rows = harnesses.list_tools(cfg)
-            self.assertEqual([row['id'] for row in rows], list(harnesses.BUILTIN_IDS))
-            self.assertTrue(all(row['builtin'] and row['enabled'] and not row['configured'] for row in rows))
-            self.assertTrue(all(row['revision'] == 0 for row in rows))
+            self.assertEqual(rows, [])
+            self.assertEqual(harnesses.allowed_ids(cfg), set())
         self.assertFalse(self.data.exists())
         with self.assertRaises(ValueError):
             harnesses.save({}, self.body())
         self.assertFalse(self.data.exists())
+
+    def seed_history(self, clients=(), targets=()):
+        self.data.mkdir(parents=True, exist_ok=True)
+        path = self.data / 'collaboration.sqlite3'
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            connection.execute('CREATE TABLE clients(root TEXT, tool TEXT)')
+            connection.execute('CREATE TABLE tasks(root TEXT, target_tool TEXT)')
+            connection.executemany('INSERT INTO clients VALUES(?,?)', clients)
+            connection.executemany('INSERT INTO tasks VALUES(?,?)', targets)
+            connection.commit()
+        return path
+
+    def test_templates_are_optional_pure_recipes_without_installation_claims(self):
+        with mock.patch.object(tool_adapters, '_candidates', side_effect=AssertionError('no probing')):
+            recipes = harnesses.templates(self.cfg)
+        self.assertEqual([row['id'] for row in recipes], ['codex', 'zcode', 'dsh', 'workbuddy', 'qoder'])
+        for row in recipes:
+            self.assertTrue(row['template'])
+            self.assertEqual(row['registration_origin'], 'template')
+            self.assertFalse({'enabled', 'configured', 'registered', 'detected', 'available', 'online', 'executable'} & set(row))
+        self.assertFalse(self.data.exists())
+
+    def test_unregistered_template_heartbeat_is_rejected_then_explicit_registration_works(self):
+        payload = {'client_id': 'fixture', 'tool': 'codex', 'name': 'fixture', 'protocol_version': 1}
+        with self.assertRaises(ValueError):
+            collaboration.execute(self.cfg, 'client_heartbeat', payload)
+        self.assertEqual(harnesses.allowed_ids(self.cfg), set())
+        harnesses.save(self.cfg, self.body('codex'))
+        reply = collaboration.execute(self.cfg, 'client_heartbeat', payload)
+        self.assertEqual(reply['tool'], 'codex')
+        self.assertEqual(harnesses.get(self.cfg, 'codex')['registration_origin'], 'explicit')
+
+    def test_legacy_usage_is_root_scoped_readonly_and_explicit_disable_wins(self):
+        root, other = config._key(self.root), config._key(self.other_root)
+        database = self.seed_history(clients=[(root, 'codex'), (other, 'workbuddy'), (root, 'custom-ai')],
+                                     targets=[(root, 'dsh'), (root, 'any'), (other, 'zcode')])
+        before = database.read_bytes()
+        rows = harnesses.list_tools(self.cfg)
+        self.assertEqual({row['id'] for row in rows}, {'codex', 'dsh'})
+        self.assertTrue(all(row['registration_origin'] == 'legacy_usage' and row['revision'] == 0
+                            and not row['configured'] and not row['template'] for row in rows))
+        self.assertEqual(harnesses.allowed_ids(self.other), {'workbuddy', 'zcode'})
+        self.assertFalse((self.data / 'harnesses.sqlite3').exists())
+        self.assertEqual(database.read_bytes(), before)
+        disabled = harnesses.save(self.cfg, {'id': 'codex', 'revision': 0, 'enabled': False})
+        self.assertEqual(disabled['revision'], 1)
+        self.assertEqual(disabled['registration_origin'], 'explicit')
+        self.assertEqual(harnesses.allowed_ids(self.cfg), {'dsh'})
+        self.assertEqual(database.read_bytes(), before)
+        self.assertIn('codex', harnesses.allowed_ids(self.cfg, include_disabled=True))
+        harnesses.save(self.cfg, {'id': 'codex', 'revision': 1, 'enabled': True})
+        self.assertIn('codex', harnesses.allowed_ids(self.cfg))
+
+    def test_legacy_native_bridge_client_can_resume_without_registry_migration(self):
+        with collaboration.store(self.cfg) as (connection, root):
+            connection.execute('INSERT INTO clients VALUES(?,?,?,?,?,?)',
+                               ('old-client', root, 'codex', 'Old client', collaboration._now(), 1))
+        self.assertFalse((self.data / 'harnesses.sqlite3').exists())
+        reply = collaboration.execute(self.cfg, 'client_heartbeat', {
+            'client_id': 'old-client', 'tool': 'codex', 'name': 'Old client', 'protocol_version': 1})
+        self.assertEqual(reply['tool'], 'codex')
+        self.assertEqual(harnesses.get(self.cfg, 'codex')['registration_origin'], 'legacy_usage')
+        self.assertFalse((self.data / 'harnesses.sqlite3').exists())
+        harnesses.save(self.cfg, {'id': 'codex', 'revision': 0, 'enabled': False})
+        with self.assertRaises(ValueError):
+            collaboration.execute(self.cfg, 'client_heartbeat', {
+                'client_id': 'old-client', 'tool': 'codex', 'name': 'Old client', 'protocol_version': 1})
+
+    def test_actual_legacy_entries_count_toward_limit_but_can_be_made_explicit(self):
+        self.seed_history(clients=[(config._key(self.root), 'codex')])
+        with harnesses._write_store(self.cfg) as (connection, root):
+            for number in range(127):
+                identifier = 'custom-%s' % number
+                connection.execute('INSERT INTO harnesses VALUES(?,?,?,?)',
+                                   (root, identifier, 1, json.dumps(harnesses._defaults(identifier, identifier))))
+        with self.assertRaises(ValueError):
+            harnesses.save(self.cfg, self.body('overflow'))
+        explicit = harnesses.save(self.cfg, {'id': 'codex', 'revision': 0})
+        self.assertEqual(explicit['revision'], 1)
+        self.assertEqual(explicit['registration_origin'], 'explicit')
+        self.assertEqual(len(harnesses.list_tools(self.cfg)), 128)
+
+    def test_legacy_database_and_sidecar_links_are_rejected(self):
+        database = self.seed_history()
+        original = self.base / 'must-keep.txt'
+        original.write_bytes(b'untouched')
+        for suffix in ('-wal', '-shm', '-journal'):
+            target = Path(str(database) + suffix)
+            os.link(original, target)
+            try:
+                with self.assertRaises(ValueError):
+                    harnesses.allowed_ids(self.cfg)
+                self.assertEqual(original.read_bytes(), b'untouched')
+            finally:
+                target.unlink()
+
+    def test_qoder_recipe_requires_registration_and_uses_generic_handoff(self):
+        with self.assertRaises(ValueError):
+            tool_adapters.project_rules('qoder', self.root, self.cfg)
+        row = harnesses.save(self.cfg, {'id': 'qoder', 'revision': 0, 'connection_mode': 'mcp_stdio'})
+        self.assertEqual(row['name'], 'Qoder')
+        self.assertFalse(row['template'])
+        proposal = tool_adapters.project_rules('qoder', self.root, self.cfg)
+        self.assertEqual([item[0] for item in proposal], ['AIHUB_HANDOFF_qoder.md'])
+
+    def test_discovery_wrapper_marks_only_real_registrations_and_keeps_source_evidence(self):
+        from aihub import harness_discovery
+        harnesses.save(self.cfg, self.body('dsh', enabled=False))
+        result = {'items': [{'id': 'codex', 'suggested_id': 'codex'}, {'id': 'dsh', 'suggested_id': 'dsh'}],
+                  'sources': {'path': {'checked': 2}}, 'truncated': False}
+        with mock.patch.object(harness_discovery, 'discover', return_value=result) as discover:
+            reply = harnesses.discover(self.cfg)
+        discover.assert_called_once_with(self.cfg, max_checks=harnesses.MAX_DISCOVERY_CHECKS,
+                                         max_path_dirs=harnesses.MAX_PATH_DIRS)
+        self.assertEqual([item['registered'] for item in reply['items']], [False, True])
+        self.assertEqual(reply['sources'], result['sources'])
 
     def test_registration_is_workspace_scoped_and_persistent_without_native_writes(self):
         executable = self.base / 'tool.exe'
@@ -113,7 +229,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(row['configured'])
         self.assertEqual(row['rules_support'], 'AGENTS.md')
         self.assertNotIn('codex', harnesses.allowed_ids(self.cfg))
-        self.assertIn('codex', harnesses.allowed_ids(self.other))
+        self.assertNotIn('codex', harnesses.allowed_ids(self.other))
         with self.assertRaises(ValueError):
             tool_adapters.project_rules('codex', self.root, self.cfg)
 
@@ -130,7 +246,7 @@ class HarnessTests(unittest.TestCase):
                         {'notes': 'Bearer synthetic-credential-example-123456789'}, {'notes': {'nested': 'not text'}}):
             with self.subTest(fields=list(updates)), self.assertRaises(ValueError):
                 harnesses.save(self.cfg, self.body(**updates))
-        self.assertEqual(len(harnesses.list_tools(self.cfg)), 4)
+        self.assertEqual(len(harnesses.list_tools(self.cfg)), 0)
 
     def test_missing_paths_are_metadata_and_invalid_paths_are_rejected(self):
         missing = self.base / 'not-installed' / 'tool.exe'
@@ -207,9 +323,9 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(database.read_bytes(), before)
         self.assertEqual(native.read_text(), 'unread')
 
-    def test_limit_counts_builtin_templates_and_does_not_remove_existing_history(self):
+    def test_limit_counts_actual_registrations_not_templates_and_preserves_history(self):
         with harnesses._write_store(self.cfg) as (connection, root):
-            for number in range(124):
+            for number in range(128):
                 identifier = 'custom-%s' % number
                 connection.execute('INSERT INTO harnesses VALUES(?,?,?,?)',
                                    (root, identifier, 1, json.dumps(harnesses._defaults(identifier, identifier))))

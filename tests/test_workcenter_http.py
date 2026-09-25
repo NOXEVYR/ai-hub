@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 import server
-from aihub import config, collaboration_maintenance as maintenance
+from aihub import config, harnesses, collaboration_maintenance as maintenance
 from tools.aihub_mcp import Bridge, BridgeError
 
 
@@ -30,6 +30,7 @@ class WorkcenterHTTP(unittest.TestCase):
             context = patch.object(obj, name, value)
             context.start()
             self.addCleanup(context.stop)
+        harnesses.save(self.cfg, {'id': 'codex', 'revision': 0, 'connection_mode': 'mcp_stdio'})
         class Quiet(server.Handler):
             def log_message(self, *_args):
                 pass
@@ -139,6 +140,9 @@ class WorkcenterHTTP(unittest.TestCase):
         self.assertFalse((other / '40_Projects').exists())
         self.assertEqual(bridge.workspace_root, str(self.root))
         new_bridge = Bridge(self.http.server_port, 'root-binding-test', 'codex')
+        with self.assertRaises(BridgeError):
+            new_bridge.heartbeat()
+        harnesses.save(self.cfg, {'id': 'codex', 'revision': 0, 'connection_mode': 'mcp_stdio'})
         new_bridge.heartbeat()
         self.assertEqual(new_bridge.workspace_root, str(other))
 

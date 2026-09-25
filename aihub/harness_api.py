@@ -60,7 +60,7 @@ def list_tools(cfg):
                     clients=matching,
                     verification_scope='successful_aihub_protocol_call_only')
     root = cfg.get('ai_root') or ''
-    return {'items': items, 'templates': [v for v in items if v.get('builtin')],
+    return {'items': items, 'templates': harnesses.templates(cfg),
             'available': available, 'root': root, 'workspace_root': root}
 
 

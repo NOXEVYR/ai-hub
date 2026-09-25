@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from aihub import collaboration as c, config
+from aihub import collaboration as c, config, harnesses
 
 
 class CollaborationTests(unittest.TestCase):
@@ -21,6 +21,9 @@ class CollaborationTests(unittest.TestCase):
         self.cfg = {'ai_root': str(self.root), 'workspace_managed': True}
         self.data_patch = patch.object(config, 'DATA_DIR', str(base / 'data'))
         self.data_patch.start()
+        # This fixture explicitly opts into the four compatibility recipes.
+        for identifier in harnesses.BUILTIN_IDS:
+            harnesses.save(self.cfg, {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         self.heartbeat('one')
 
     def tearDown(self):

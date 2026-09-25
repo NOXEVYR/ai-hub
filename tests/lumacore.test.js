@@ -22,7 +22,7 @@ test('reorganized navigation preserves all routes, action IDs and module loading
   for(const id of ['app','sidebar','nav','sidebar-status','main','topbar','menu-toggle','nav-back','nav-back-label','page-title','jobbar','global-search','btn-check-updates','btn-rescan','page','drawer','drawer-mask','lightbox','modal-mask','modal','toast'])assert.equal([...index.matchAll(new RegExp(`id="${id}"`,'g'))].length,1,id);
   assert(index.indexOf('lumacore.css')>index.indexOf('collaboration.css'));
   for(const module of ['navigation.js','harnesses.js','workspace.js','collaboration.js','workcenter.js','capabilities.js','context-menu.js'])assert(index.indexOf(`src="${module}"`)<index.indexOf('src="app.js"'));
-  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.10\.0/);
+  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.11\.0/);
   assert.match(index,/<title>曜核 · AI 资产与协作工作台<\/title>/);assert.match(index,/<b>曜核<\/b>/);
   assert(!index.includes('LUMACORE'));assert(!index.includes('LumaCore'));assert(!index.includes('曜瞳'));
 });

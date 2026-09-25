@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from aihub import config, collaboration, collaboration_maintenance as maintenance, workcenter
+from aihub import harnesses, config, collaboration, collaboration_maintenance as maintenance, workcenter
 
 _REAL_REPORTS = workcenter.management.reports
 _REAL_PROJECTS = workcenter.management.projects
@@ -26,6 +26,9 @@ class WorkcenterTests(unittest.TestCase):
             patch = mock.patch.object(config, name, value)
             patch.start()
             self.addCleanup(patch.stop)
+        # This fixture explicitly opts into the four compatibility recipes.
+        for identifier in harnesses.BUILTIN_IDS:
+            harnesses.save(self.cfg, {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         self.reports = mock.patch.object(workcenter.management, 'reports', return_value=[]).start()
         self.projects = mock.patch.object(workcenter.management, 'projects', return_value={'items': []}).start()
         self.addCleanup(mock.patch.stopall)

@@ -16,8 +16,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.9.0.0")]
-[assembly: AssemblyFileVersion("2.9.0.0")]
+[assembly: AssemblyVersion("2.11.0.0")]
+[assembly: AssemblyFileVersion("2.11.0.0")]
 
 namespace AIHub.Desktop
 {
@@ -140,7 +140,6 @@ namespace AIHub.Desktop
         private bool initializing;
         private bool exiting;
         private bool exitApproved;
-        private bool trayHintShown;
         private bool resourcesReleased;
         private bool loaded;
 
@@ -392,11 +391,6 @@ namespace AIHub.Desktop
             {
                 e.Cancel = true;
                 Hide();
-                if (!trayHintShown)
-                {
-                    trayHintShown = true;
-                    tray.ShowBalloonTip(5000, "曜核已在后台运行", "双击托盘图标打开工作台；右键可退出曜核及后台服务。", ToolTipIcon.Info);
-                }
                 Hub.Log("window_hidden service_preserved");
                 return;
             }

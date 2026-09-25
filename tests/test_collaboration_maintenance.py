@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-from aihub import config, collaboration_maintenance as maintenance
+from aihub import harnesses, config, collaboration_maintenance as maintenance
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -24,6 +24,9 @@ class MaintenanceTests(unittest.TestCase):
             patch = mock.patch.object(config, name, value)
             patch.start()
             self.addCleanup(patch.stop)
+        # This fixture explicitly opts into the four compatibility recipes.
+        for identifier in harnesses.BUILTIN_IDS:
+            harnesses.save(self.cfg, {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         patch = mock.patch.object(maintenance, '_root', side_effect=lambda cfg: cfg['ai_root'])
         patch.start()
         self.addCleanup(patch.stop)
