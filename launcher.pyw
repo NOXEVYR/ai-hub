@@ -133,6 +133,8 @@ def main(argv=None):
     startup_state = {}
     outcome = "failed"
     try:
+        from aihub.app_update import startup_guard
+        startup_guard(ROOT)
         settings = json.loads((DATA / "config.json").read_text(encoding="utf-8-sig")) if (DATA / "config.json").is_file() else {}
         port = args.port or settings.get("server", {}).get("port", 8765)
         if not isinstance(port, int) or not 1024 <= port <= 65535:

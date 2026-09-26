@@ -244,7 +244,7 @@
   setInterval(pollJobs, 2500);
 
   // ---------- 路由 ----------
-  const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "更新中心", analysis: "使用分析",
+  const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
     images: "出图图库", llm: "模型管理", files: "文件总览", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力与调度", workspace:"工作环境", collaboration:"协作与记忆", settings: "设置", organizer: "安全区整理" };
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
@@ -810,6 +810,7 @@
                      hf_base: $("#s-hbase").value.trim(), proxy: $("#s-proxy").value.trim(),
                      request_interval: parseFloat($("#s-interval").value) || 1.2 },
         }});
+        window.AIHubAppUpdate?.saved(el);
         toast("设置已保存，可以刷新索引读取资产", "ok");
       };
       $("#s-rescan", el).onclick = async () => {

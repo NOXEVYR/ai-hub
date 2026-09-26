@@ -22,6 +22,9 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from aihub import app_update
+app_update.startup_guard(os.path.dirname(os.path.abspath(__file__)))
+
 from aihub import api, config as cfgmod, jobs, organization, service_control  # noqa: E402
 from aihub.db import DB  # noqa: E402
 
@@ -32,7 +35,7 @@ CFG = {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIHub/2.11.3"
+    server_version = "AIHub/2.12.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -105,11 +108,55 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             threading.Thread(target=self.server.shutdown, name='aihub-desktop-shutdown', daemon=True).start()
 
+    def _app_update(self, action, body):
+        control = getattr(self.server, 'service_control', None)
+        if (self.headers.get('Origin') is not None or
+                any(key.lower().startswith('sec-fetch-') for key in self.headers) or
+                not control or not control.authorize(self.headers, body)):
+            self._json(403, {'error': '请从曜核桌面软件更新窗口操作。', 'code': 'control_denied'})
+            return
+        expected = {'check': set(), 'settings': {'auto_check', 'auto_install'},
+                    'download': {'release_id'}, 'prepare': {'release_id', 'restart', 'desktop'},
+                    'cancel': {'transaction_id'}}
+        if action not in expected:
+            self._json(404, {'error': '未知更新操作。'})
+            return
+        if not isinstance(body, dict) or set(body) != expected[action] | {'instance_id', 'install_root'}:
+            self._json(400, {'error': '更新参数格式有误。', 'code': 'invalid_request'})
+            return
+        manager = getattr(self.server, 'app_update', None)
+        if manager is None or not control.gate.enter():
+            self._json(503, {'error': '服务正在退出。', 'code': 'service_stopping'})
+            return
+        try:
+            values = {key: body[key] for key in expected[action]}
+            result = getattr(manager, action)(**values)
+            self._json(200, result)
+        except app_update.UpdateSecurityError as error:
+            self._json(400, {'error': str(error)[:500], 'code': 'invalid_update'})
+        except app_update.UpdateBusyError as error:
+            self._json(409, {'error': str(error)[:500], 'code': 'update_busy'})
+        except (ValueError, TypeError):
+            self._json(400, {'error': '更新参数或发布信息无效。', 'code': 'invalid_update'})
+        except RuntimeError:
+            self._json(409, {'error': '更新状态已变化或任务繁忙，请刷新后重试。', 'code': 'update_busy'})
+        except Exception:
+            self._json(500, {'error': '软件更新失败，请查看更新窗口并重试。', 'code': 'update_failed'})
+        finally:
+            control.gate.leave()
+
     def do_GET(self):
         if not self._valid_host():
             self._send(403, {"Content-Type": "application/json"}, b'{"error":"host not allowed"}')
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/app-update/status':
+            manager = getattr(self.server, 'app_update', None)
+            if manager is None:
+                self._json(503, {'error': '软件更新尚未就绪。'})
+            else:
+                self._json(200, manager.status())
+            return
         if parsed.path.startswith("/api/"):
             self._dispatch('GET', parsed)
             return
@@ -137,6 +184,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8")) if raw else None
         except Exception:
             body = None
+        if parsed.path.startswith('/api/desktop/update/'):
+            self._app_update(parsed.path.removeprefix('/api/desktop/update/'), body)
+            return
         if parsed.path == '/api/desktop/shutdown':
             self._shutdown(body)
             return
@@ -158,6 +208,8 @@ def cmd_serve(args):
     url = f"http://127.0.0.1:{port}"
     control = service_control.ServiceControl(cfgmod.APP_DIR, cfgmod.DATA_DIR, port)
     httpd.service_control = control
+    update_manager = app_update.UpdateManager(cfgmod.APP_DIR, "2.12.0", gate=control.gate)
+    httpd.app_update = update_manager
     from aihub import collaboration_maintenance
     maintenance_worker = None
     published = False
@@ -175,6 +227,7 @@ def cmd_serve(args):
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         if not getattr(args, "no_initial_scan", False):
             maintenance_worker = collaboration_maintenance.start_scheduler(CFG)
+            update_manager.start_scheduler()
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[AI Hub] 已退出")
@@ -182,6 +235,7 @@ def cmd_serve(args):
         if maintenance_worker:
             maintenance_worker[0].set()
             maintenance_worker[1].join(timeout=3)
+        update_manager.close()
         httpd.server_close()
         if published:
             control.close()

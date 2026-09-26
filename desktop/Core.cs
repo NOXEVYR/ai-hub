@@ -37,7 +37,7 @@ namespace AIHub.Desktop
             return userClosing && !exitApproved;
         }
 
-        private static string TextValue(Dictionary<string, object> value, string key)
+        internal static string TextValue(Dictionary<string, object> value, string key)
         {
             object result;
             return value != null && value.TryGetValue(key, out result) ? result as string : null;
@@ -79,7 +79,7 @@ namespace AIHub.Desktop
 
         // A failed health request is not proof of a stopped server. Only an explicit
         // refused loopback connection permits the desktop to report shutdown success.
-        private static Dictionary<string, object> ReadControlHealth(out bool absent)
+        internal static Dictionary<string, object> ReadControlHealth(out bool absent)
         {
             absent = false;
             try { return ReadJson(LocalRequest("/api/health").GetResponse()); }
@@ -180,6 +180,135 @@ namespace AIHub.Desktop
                 return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-", "").ToLowerInvariant();
         }
 
+        private static bool IsPlainDirectory(string path)
+        {
+            var attributes = File.GetAttributes(path);
+            return (attributes & FileAttributes.Directory) != 0 && (attributes & FileAttributes.ReparsePoint) == 0;
+        }
+
+        private static bool PathDefinitelyAbsent(string path)
+        {
+            try { File.GetAttributes(path); return false; }
+            catch (FileNotFoundException) { return true; }
+            catch (DirectoryNotFoundException) { return true; }
+            catch { return false; }
+        }
+
+        private static Dictionary<string, object> ReadGuardJson(string path, int limit)
+        {
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                if (stream.Length < 2 || stream.Length > limit) throw new InvalidDataException("update marker size");
+                using (var reader = new StreamReader(stream, new UTF8Encoding(false, true)))
+                {
+                    string text = reader.ReadToEnd();
+                    var value = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text);
+                    if (value == null) throw new InvalidDataException("update marker shape");
+                    return value;
+                }
+            }
+        }
+
+        private static long NumberValue(Dictionary<string, object> value, string name)
+        {
+            object raw;
+            long result;
+            if (value == null || !value.TryGetValue(name, out raw) ||
+                !(raw is int || raw is long) || !Int64.TryParse(Convert.ToString(raw, System.Globalization.CultureInfo.InvariantCulture), out result))
+                throw new InvalidDataException("update marker number");
+            return result;
+        }
+
+        private static bool IsSameProcess(Dictionary<string, object> identity)
+        {
+            if (identity == null) return false;
+            long pid, expected;
+            string start = TextValue(identity, "start_filetime");
+            if (!Int64.TryParse(start, out expected) || expected <= 0) return false;
+            try { pid = NumberValue(identity, "pid"); } catch { return false; }
+            if (pid <= 0 || pid > Int32.MaxValue) return false;
+            using (SafeWaitHandle process = OpenProcess(0x00100000 | 0x1000, false, (int)pid))
+            {
+                if (process == null || process.IsInvalid || process.IsClosed) return false;
+                long actual, exited, kernel, user;
+                if (!GetProcessTimes(process, out actual, out exited, out kernel, out user)) return false;
+                return WaitForSingleObject(process, 0) == 0x00000102 && actual == expected;
+            }
+        }
+
+        // This probe never starts Python or changes transaction state. Holding the
+        // same byte-range lock as msvcrt makes an active helper handoff immediately
+        // visible, including the interval before it takes the desktop mutex.
+        internal static bool UpdateStartupPending()
+        {
+            string updates = Path.Combine(Root, "data", "app-updates");
+            string marker = Path.Combine(updates, "install-lock.json");
+            if (PathDefinitelyAbsent(marker)) return false;
+            FileStream transactionLock = null;
+            bool locked = false;
+            try
+            {
+                string data = Path.Combine(Root, "data");
+                string transactions = Path.Combine(updates, "transactions");
+                if (!IsPlainDirectory(data) || !IsPlainDirectory(updates) || !IsPlainDirectory(transactions))
+                    return true;
+                string lockPath = Path.Combine(updates, "transaction.lock");
+                if (!PathDefinitelyAbsent(lockPath))
+                {
+                    if ((File.GetAttributes(lockPath) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) return true;
+                    transactionLock = new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    try { transactionLock.Lock(0, 1); locked = true; }
+                    catch (IOException) { return true; }
+                }
+
+                if (PathDefinitelyAbsent(marker)) return false;
+                if ((File.GetAttributes(marker) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) return true;
+                Dictionary<string, object> lockRecord = ReadGuardJson(marker, 32768);
+                if (TextValue(lockRecord, "schema") != "ai-hub-update-lock-v1") return true;
+                string transactionId = TextValue(lockRecord, "transaction_id");
+                if (transactionId == null || transactionId.Length != 32) return true;
+                foreach (char value in transactionId) if (!(value >= '0' && value <= '9') && !(value >= 'a' && value <= 'f')) return true;
+                string directory = Path.Combine(transactions, transactionId);
+                if (!IsPlainDirectory(directory)) return true;
+                string statePath = Path.Combine(directory, "transaction.json");
+                if ((File.GetAttributes(statePath) & FileAttributes.ReparsePoint) != 0) return true;
+                Dictionary<string, object> transaction = ReadGuardJson(statePath, 128 * 1024);
+                if (TextValue(transaction, "schema") != "ai-hub-update-transaction-v1" ||
+                    TextValue(transaction, "transaction_id") != transactionId) return true;
+
+                // A terminal journal still owns the handoff until the helper exits.
+                if (IsSameProcess(transaction.ContainsKey("helper_identity") ? transaction["helper_identity"] as Dictionary<string, object> : null) ||
+                    IsSameProcess(transaction.ContainsKey("service_identity") ? transaction["service_identity"] as Dictionary<string, object> : null))
+                    return true;
+
+                string state = TextValue(transaction, "state");
+                if (state == "succeeded" || state == "failed" || state == "cancelled" ||
+                    state == "recovered_no_write" || state == "recovered_rollback") return false;
+                if (state == "prepared" || state == "helper_starting")
+                {
+                    long created = NumberValue(lockRecord, "created_at");
+                    long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
+                    if (now - created < 90) return true;
+                }
+                return false;
+            }
+            catch
+            {
+                // A damaged marker must never make a native instance hold the
+                // desktop mutex while an update may still be in flight.
+                return true;
+            }
+            finally
+            {
+                if (transactionLock != null)
+                {
+                    if (locked) { try { transactionLock.Unlock(0, 1); } catch { } }
+                    transactionLock.Dispose();
+                }
+            }
+        }
+
         internal static string NormalizeRoot(string root)
         {
             string full = Path.GetFullPath(root);
@@ -247,6 +376,20 @@ namespace AIHub.Desktop
                    Uri.TryCreate(origin, UriKind.Absolute, out baseUri) &&
                    uri.Scheme == "http" && uri.Host == "127.0.0.1" &&
                    uri.Port == baseUri.Port && uri.UserInfo.Length == 0;
+        }
+
+        internal static bool IsTrustedUpdateMessageSource(string eventSource, string currentSource, string expectedOrigin)
+        {
+            Uri message, current, origin;
+            if (!IsLocalPage(eventSource, expectedOrigin) || !IsLocalPage(currentSource, expectedOrigin) ||
+                !Uri.TryCreate(eventSource, UriKind.Absolute, out message) ||
+                !Uri.TryCreate(currentSource, UriKind.Absolute, out current) ||
+                !Uri.TryCreate(expectedOrigin, UriKind.Absolute, out origin)) return false;
+            return String.Equals(message.AbsoluteUri, current.AbsoluteUri, StringComparison.Ordinal) &&
+                   message.AbsolutePath == "/" && current.AbsolutePath == "/" &&
+                   String.IsNullOrEmpty(message.Query) && String.IsNullOrEmpty(current.Query) &&
+                   message.Scheme == "http" && message.Host == "127.0.0.1" &&
+                   message.Port == origin.Port && message.UserInfo.Length == 0;
         }
 
         internal static bool IsWebLink(string address)

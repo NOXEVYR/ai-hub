@@ -70,9 +70,9 @@ namespace AIHub.Desktop
             int pe = BitConverter.ToInt32(exe, 60);
             Check(BitConverter.ToUInt16(exe, pe + 4) == 0x8664 && BitConverter.ToUInt16(exe, pe + 24 + 68) == 2,
                 "PE x64 Windows GUI");
-            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.11.3.0", "assembly version 2.11.3.0");
+            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.12.0.0", "assembly version 2.12.0.0");
             var version = FileVersionInfo.GetVersionInfo(args[1]);
-            Check(version.FileVersion == "2.11.3.0" && version.ProductName == "曜核", "EXE version and product display name");
+            Check(version.FileVersion == "2.12.0.0" && version.ProductName == "曜核", "EXE version and product display name");
             using (var embedded = Assembly.LoadFile(Path.GetFullPath(args[1])).GetManifestResourceStream("brand.ico"))
             using (var memory = new MemoryStream())
             {

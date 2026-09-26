@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -16,8 +17,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.11.3.0")]
-[assembly: AssemblyFileVersion("2.11.3.0")]
+[assembly: AssemblyVersion("2.12.0.0")]
+[assembly: AssemblyFileVersion("2.12.0.0")]
 
 namespace AIHub.Desktop
 {
@@ -44,7 +45,11 @@ namespace AIHub.Desktop
                 // Keep the desktop profile with this installation. Packaged launchers
                 // can virtualize LocalAppData, producing a different profile from Explorer.
                 Hub.Cache = Path.Combine(Hub.Root, "data", "desktop");
-                Directory.CreateDirectory(Hub.Cache);
+                if (Hub.UpdateStartupPending())
+                {
+                    Hub.Log("desktop_startup_deferred update_transaction");
+                    return 0;
+                }
                 using (var mutex = new Mutex(false, @"Local\AIHub-desktop-" + id))
                 using (ActivateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\AIHub-desktop-show-" + id))
                 {
@@ -53,6 +58,15 @@ namespace AIHub.Desktop
                     if (!owner) { ActivateEvent.Set(); Hub.Log("desktop_reused"); return 0; }
                     try
                     {
+                        // Close the marker-to-mutex race as well. This check is still
+                        // before libraries or UI are opened, and the finally releases
+                        // the mutex immediately if a handoff appeared in the gap.
+                        if (Hub.UpdateStartupPending())
+                        {
+                            Hub.Log("desktop_startup_deferred update_transaction_after_mutex");
+                            return 0;
+                        }
+                        Directory.CreateDirectory(Hub.Cache);
                         SetCurrentProcessExplicitAppUserModelID("AIHub.Desktop");
                         PrepareLibraries();
                         Hub.Log("desktop_started pid=" + Process.GetCurrentProcess().Id);
@@ -128,6 +142,8 @@ namespace AIHub.Desktop
 
     internal sealed class HubWindow : Form
     {
+        private enum UpdateAttempt { Installed, Skipped, Cancelled, Blocked }
+
         private WebView2 web;
         private readonly Label failure;
         private readonly StartupAnimation startupAnimation;
@@ -136,7 +152,10 @@ namespace AIHub.Desktop
         private readonly NotifyIcon tray;
         private readonly ContextMenuStrip trayMenu;
         private readonly ToolStripMenuItem retryItem;
+        private readonly ToolStripMenuItem updateItem;
         private readonly ToolStripMenuItem exitItem;
+        private AppUpdateDialog updateDialog;
+        private AppUpdateInstall activeInstall;
         private Task<string> serviceStartup;
         private bool initializing;
         private bool initializationInterrupted;
@@ -144,6 +163,7 @@ namespace AIHub.Desktop
         private bool exitApproved;
         private bool resourcesReleased;
         private bool loaded;
+        private bool installingUpdate;
 
         internal HubWindow()
         {
@@ -162,10 +182,14 @@ namespace AIHub.Desktop
             openItem.Click += delegate { BringToUser(); };
             retryItem = new ToolStripMenuItem("重试打开工作台") { Enabled = false };
             retryItem.Click += async delegate { BringToUser(); await InitializeAsync(); };
+            updateItem = new ToolStripMenuItem("软件更新…");
+            updateItem.Click += delegate { ShowUpdateDialog(); };
             exitItem = new ToolStripMenuItem("退出曜核（含后台）");
             exitItem.Click += async delegate { await ExitAsync(); };
             trayMenu.Items.Add(openItem);
             trayMenu.Items.Add(retryItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(updateItem);
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add(exitItem);
             tray = new NotifyIcon { Icon = Icon, Text = "曜核 · 本地 AI 工作台", ContextMenuStrip = trayMenu, Visible = true };
@@ -275,7 +299,7 @@ namespace AIHub.Desktop
                 core.Settings.AreDefaultContextMenusEnabled = false;
                 core.Settings.AreDevToolsEnabled = false;
                 core.Settings.AreHostObjectsAllowed = false;
-                core.Settings.IsWebMessageEnabled = false;
+                core.Settings.IsWebMessageEnabled = true;
                 core.Settings.IsPasswordAutosaveEnabled = false;
                 core.Settings.IsGeneralAutofillEnabled = false;
                 core.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e)
@@ -294,6 +318,16 @@ namespace AIHub.Desktop
                     // Copying model paths works with the ordinary user-gesture clipboard API.
                     // This app does not require camera, mic, location or clipboard-read access.
                     e.State = CoreWebView2PermissionState.Deny;
+                };
+                core.WebMessageReceived += delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+                {
+                    if (closing.IsCancellationRequested || exiting || installingUpdate ||
+                        !Hub.IsTrustedUpdateMessageSource(e.Source, core.Source, Hub.Url)) return;
+                    try
+                    {
+                        if (e.TryGetWebMessageAsString() == "open-app-update") ShowUpdateDialog();
+                    }
+                    catch { }
                 };
                 core.DownloadStarting += delegate(object sender, CoreWebView2DownloadStartingEventArgs e)
                 {
@@ -368,6 +402,19 @@ namespace AIHub.Desktop
                     try { await serviceStartup; } catch { }
                 }
                 if (closing.IsCancellationRequested) return;
+                if (!ClearFinishedUpdateHelper()) return;
+
+                Dictionary<string, object> updateStatus = null;
+                try { updateStatus = await Task.Run(() => AppUpdateApi.Status()); }
+                catch { /* An older or unreachable service must retain the existing exit path. */ }
+                if (AppUpdateDialog.Boolean(updateStatus, "auto_install", false) &&
+                    AppUpdateDialog.Value(updateStatus, "state") == "ready")
+                {
+                    var attempt = await TryInstallReadyUpdateAsync(updateStatus, false, true);
+                    if (attempt == UpdateAttempt.Installed || attempt == UpdateAttempt.Cancelled || attempt == UpdateAttempt.Blocked)
+                        return;
+                }
+                if (closing.IsCancellationRequested) return;
                 var result = await Task.Run(() => Hub.ShutdownService());
                 if (closing.IsCancellationRequested) return;
                 if (result.Stopped)
@@ -405,6 +452,175 @@ namespace AIHub.Desktop
                     tray.Text = "曜核 · 本地 AI 工作台";
                 }
             }
+        }
+
+        internal async void InstallReadyUpdate(bool automatic)
+        {
+            if (automatic || exiting || closing.IsCancellationRequested || installingUpdate) return;
+            exiting = true;
+            installingUpdate = true;
+            SyncStartupVisibility();
+            retryItem.Enabled = false;
+            updateItem.Enabled = false;
+            exitItem.Enabled = false;
+            tray.Text = "曜核 · 正在准备软件更新…";
+            try
+            {
+                if (serviceStartup != null) { try { await serviceStartup; } catch { } }
+                if (closing.IsCancellationRequested) return;
+                Dictionary<string, object> updateStatus;
+                try { updateStatus = await Task.Run(() => AppUpdateApi.Status()); }
+                catch (Exception e)
+                {
+                    MessageBox.Show(this, e.Message, "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                await TryInstallReadyUpdateAsync(updateStatus, true, false);
+            }
+            finally
+            {
+                installingUpdate = false;
+                if (!closing.IsCancellationRequested)
+                {
+                    exiting = false;
+                    SyncStartupVisibility();
+                    updateItem.Enabled = true;
+                    exitItem.Enabled = true;
+                    retryItem.Enabled = !initializing && !loaded;
+                    tray.Text = "曜核 · 本地 AI 工作台";
+                }
+            }
+        }
+
+        private async Task<UpdateAttempt> TryInstallReadyUpdateAsync(Dictionary<string, object> updateStatus, bool restart, bool automatic)
+        {
+            if (!ClearFinishedUpdateHelper()) return UpdateAttempt.Blocked;
+            if (AppUpdateDialog.Value(updateStatus, "state") != "ready")
+            {
+                if (!automatic) MessageBox.Show(this, "已验证的更新包尚未准备好。请先检查并下载更新。", "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return UpdateAttempt.Skipped;
+            }
+
+            bool? dirty = await HasUnsavedChangesAsync();
+            if (dirty == null)
+            {
+                if (!automatic) MessageBox.Show(this, "目前无法确认页面是否有未保存内容。请保存页面后重试安装。", "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return UpdateAttempt.Skipped;
+            }
+            if (dirty.Value)
+            {
+                DialogResult answer = MessageBox.Show(this,
+                    "页面有编辑过的内容。请先保存；继续将关闭工作台，未保存内容会丢失。",
+                    "曜核 · 保存页面内容", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) return UpdateAttempt.Cancelled;
+            }
+
+            AppUpdateInstall install = null;
+            Exception operationError = null;
+            try
+            {
+                string releaseId = AppUpdateDialog.Value(updateStatus, "release_id");
+                install = await Task.Run(() => AppUpdateInstall.PrepareAndStart(releaseId, restart));
+                activeInstall = install;
+                var result = await Task.Run(() => Hub.ShutdownService());
+                if (closing.IsCancellationRequested) return UpdateAttempt.Blocked;
+                if (!result.Stopped)
+                {
+                    bool canceled = await CancelPreparedInstallAsync(install);
+                    if (!canceled) return UpdateAttempt.Blocked;
+                    MessageBox.Show(this, result.Message, "曜核 · 更新暂未安装", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return UpdateAttempt.Blocked;
+                }
+                Exception commitError = null;
+                try { install.Commit(); }
+                catch (Exception error) { commitError = error; }
+                if (commitError != null)
+                {
+                    bool canceled = await CancelPreparedInstallAsync(install);
+                    try { await Task.Run(() => Hub.EnsureService()); } catch { }
+                    MessageBox.Show(this, canceled ? "无法安全提交更新事务；当前版本已保留，后台已尝试重新启动。" :
+                        "无法提交或取消更新事务。为了避免安装助手继续写入，曜核会保持打开。" + Environment.NewLine + commitError.Message,
+                        "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return canceled ? UpdateAttempt.Skipped : UpdateAttempt.Blocked;
+                }
+                exitApproved = true;
+                Hub.Log(restart ? "desktop_update_committed restart=true" : "desktop_update_committed restart=false");
+                Close();
+                return UpdateAttempt.Installed;
+            }
+            catch (Exception error)
+            {
+                operationError = error;
+            }
+            if (operationError == null) return UpdateAttempt.Skipped;
+            if (install != null)
+            {
+                bool canceled = await CancelPreparedInstallAsync(install);
+                if (!canceled)
+                {
+                    MessageBox.Show(this, "更新事务仍在等待安全取消。请保持曜核打开，稍后重试。" + Environment.NewLine + operationError.Message,
+                        "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return UpdateAttempt.Blocked;
+                }
+            }
+            if (!automatic) MessageBox.Show(this, operationError.Message, "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return UpdateAttempt.Skipped;
+        }
+
+        private async Task<bool> CancelPreparedInstallAsync(AppUpdateInstall install)
+        {
+            try { await Task.Run(() => install.Cancel()); } catch { }
+            bool stopped = await Task.Run(() => install.WaitForHelperExit(5000));
+            if (stopped)
+            {
+                install.Dispose();
+                if (ReferenceEquals(activeInstall, install)) activeInstall = null;
+            }
+            return stopped;
+        }
+
+        private bool ClearFinishedUpdateHelper()
+        {
+            if (activeInstall == null) return true;
+            if (!activeInstall.WaitForHelperExit(0))
+            {
+                MessageBox.Show(this, "更新助手仍在完成事务收尾。请稍后再试，曜核和后台保持运行。", "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+            activeInstall.Detach();
+            activeInstall = null;
+            return true;
+        }
+
+        private async Task<bool?> HasUnsavedChangesAsync()
+        {
+            if (web == null || web.IsDisposed || web.CoreWebView2 == null || !loaded) return null;
+            try
+            {
+                Task<string> evaluation = web.CoreWebView2.ExecuteScriptAsync(
+                    "typeof window.aiHubHasUnsavedChanges === 'function' ? window.aiHubHasUnsavedChanges() : null");
+                if (await Task.WhenAny(evaluation, Task.Delay(2500)) != evaluation) return null;
+                string value = await evaluation;
+                if (value == "true") return true;
+                if (value == "false") return false;
+            }
+            catch { }
+            return null;
+        }
+
+        private void ShowUpdateDialog()
+        {
+            if (exiting || closing.IsCancellationRequested || installingUpdate) return;
+            BringToUser();
+            if (updateDialog == null || updateDialog.IsDisposed)
+            {
+                updateDialog = new AppUpdateDialog();
+                updateDialog.InstallRequested += delegate { InstallReadyUpdate(false); };
+                updateDialog.FormClosed += delegate { updateDialog = null; };
+            }
+            if (!updateDialog.Visible) updateDialog.Show(this);
+            updateDialog.BringToFront();
+            updateDialog.Activate();
         }
 
         private void OpenWebLink(string address)
@@ -479,6 +695,7 @@ namespace AIHub.Desktop
             if (resourcesReleased) return;
             resourcesReleased = true;
             closing.Cancel();
+            if (activeInstall != null) { activeInstall.Detach(); activeInstall = null; }
             if (startupAnimation != null) startupAnimation.Dispose();
             if (activation != null) activation.Unregister(null);
             if (tray != null) { tray.Visible = false; tray.Dispose(); }

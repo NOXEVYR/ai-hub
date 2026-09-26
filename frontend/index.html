@@ -27,11 +27,11 @@
       <a href="#/workspace" data-page="workspace"><span data-icon="folder"></span><span>工作环境</span></a>
       <a href="#/organizer" data-page="organizer"><span data-icon="shield"></span><span>安全区整理</span></a>
       <a href="#/analysis" data-page="analysis"><span data-icon="chart"></span><span>使用分析</span></a>
-      <a href="#/updates" data-page="updates"><span data-icon="refresh"></span><span>版本更新</span></a>
+      <a href="#/updates" data-page="updates"><span data-icon="refresh"></span><span>模型更新</span></a>
       <a href="#/settings" data-page="settings"><span data-icon="settings"></span><span>终端设置</span></a>
     </nav>
     <div id="sidebar-status" class="sidebar-status" aria-live="polite">正在连接本地服务…</div>
-    <div class="sidebar-note"><span class="local-indicator" aria-hidden="true"></span> 本地工作台 <span>v2.11.3</span></div>
+    <div class="sidebar-note"><span class="local-indicator" aria-hidden="true"></span> 本地工作台 <span>v2.12.0</span></div>
   </aside>
   <main id="main">
     <header id="topbar">
@@ -40,7 +40,8 @@
       <div class="top-heading"><small>曜核</small><span class="sep">/</span><h1 id="page-title">工作总览</h1></div>
       <div id="jobbar" class="jobbar hidden" role="status"><span class="spin">◌</span><span id="jobbar-text"></span></div>
       <label class="global-searchbox"><span data-icon="search" aria-hidden="true"></span><input id="global-search" type="search" aria-label="全局搜索模型" placeholder="搜索模型、架构…"><kbd aria-hidden="true">Ctrl K</kbd></label>
-      <button id="btn-check-updates" class="btn ghost" title="检查模型来源的版本信息"><span data-icon="refresh"></span>检查更新</button>
+      <button id="btn-app-update" class="btn ghost" title="曜核软件版本与自动更新">软件更新</button>
+      <button id="btn-check-updates" class="btn ghost" title="检查模型来源的版本信息"><span data-icon="refresh"></span>检查模型版本</button>
       <button id="btn-rescan" class="btn primary" aria-label="刷新索引" title="刷新本地文件与出图索引"><span data-icon="scan"></span>刷新索引</button>
     </header>
     <div id="page"></div>
@@ -50,6 +51,6 @@
 <div id="lightbox" class="hidden" role="dialog" aria-modal="true" aria-label="图片查看"></div>
 <div id="modal-mask" class="hidden"><div id="modal" role="dialog" aria-modal="true" aria-label="详细信息"></div></div>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="navigation.js"></script><script src="organizer.js"></script><script src="registry.js"></script><script src="harnesses.js"></script><script src="workspace.js"></script><script src="collaboration.js"></script><script src="context-menu.js"></script><script src="workcenter.js"></script><script src="capabilities.js"></script><script src="app.js"></script>
+<script src="navigation.js"></script><script src="organizer.js"></script><script src="registry.js"></script><script src="harnesses.js"></script><script src="workspace.js"></script><script src="collaboration.js"></script><script src="context-menu.js"></script><script src="workcenter.js"></script><script src="capabilities.js"></script><script src="app-update.js"></script><script src="app.js"></script>
 </body>
 </html>
