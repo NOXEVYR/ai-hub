@@ -24,8 +24,11 @@ def main():
     parser.add_argument("--sdk-package", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--render-output", type=Path, help="With --test, save offline source-control frames (not real-window screenshots)")
     parser.add_argument("--alias-root", type=Path, help="Optional existing junction to test against the physical application folder")
     args = parser.parse_args()
+    if args.render_output and not args.test:
+        parser.error("--render-output requires --test")
     if hashlib.sha256(args.sdk_package.read_bytes()).hexdigest() != SDK_SHA256:
         raise SystemExit("WebView2 SDK archive SHA-256 does not match the pinned official package.")
     compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
@@ -65,13 +68,14 @@ def main():
             icon_tests = folder / "icon-tests.exe"
             subprocess.run(common + ["/target:exe", "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll", f"/out:{icon_tests}",
                                       str(DESKTOP / "StartupAnimation.cs"), str(DESKTOP / "IconTests.cs")], check=True)
-            subprocess.run([str(icon_tests), str(ROOT / "frontend/brand.ico"), str(exe)], check=True)
+            subprocess.run([str(icon_tests), str(ROOT / "frontend/brand.ico"), str(exe)] +
+                           ([str(args.render_output.resolve())] if args.render_output else []), check=True)
         shutil.copy2(exe, output)
     result = {"exe": str(output), "bytes": output.stat().st_size,
               "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
               "architecture": "x64", "subsystem": "Windows GUI", "sdk": SDK_VERSION,
               "sdk_sha256": SDK_SHA256, "contains_user_data": False,
-              "display_name": "曜核", "desktop_version": "2.11.2.0",
+              "display_name": "曜核", "desktop_version": "2.11.3.0",
               "icon_sha256": hashlib.sha256((ROOT / "frontend/brand.ico").read_bytes()).hexdigest()}
     output.with_suffix(".build.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))

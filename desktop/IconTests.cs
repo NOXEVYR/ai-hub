@@ -31,6 +31,7 @@ namespace AIHub.Desktop
         private static int Run(string[] args)
         {
             CheckStartupControl(args[0]);
+            CheckStartupScene(args[0], args.Length > 2 ? args[2] : null);
             byte[] ico = File.ReadAllBytes(args[0]);
             int[] sizes = { 16, 20, 24, 32, 48, 64, 128, 256 };
             Check(BitConverter.ToUInt16(ico, 2) == 1 && BitConverter.ToUInt16(ico, 4) == sizes.Length, "eight ICO frames");
@@ -69,9 +70,9 @@ namespace AIHub.Desktop
             int pe = BitConverter.ToInt32(exe, 60);
             Check(BitConverter.ToUInt16(exe, pe + 4) == 0x8664 && BitConverter.ToUInt16(exe, pe + 24 + 68) == 2,
                 "PE x64 Windows GUI");
-            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.11.2.0", "assembly version 2.11.2.0");
+            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.11.3.0", "assembly version 2.11.3.0");
             var version = FileVersionInfo.GetVersionInfo(args[1]);
-            Check(version.FileVersion == "2.11.2.0" && version.ProductName == "曜核", "EXE version and product display name");
+            Check(version.FileVersion == "2.11.3.0" && version.ProductName == "曜核", "EXE version and product display name");
             using (var embedded = Assembly.LoadFile(Path.GetFullPath(args[1])).GetManifestResourceStream("brand.ico"))
             using (var memory = new MemoryStream())
             {
@@ -175,7 +176,105 @@ namespace AIHub.Desktop
             }
         }
 
+        private static Bitmap RenderFrame(StartupAnimation animation, Size size, float dpi, double seconds, bool moving)
+        {
+            var bitmap = new Bitmap(size.Width, size.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(animation.BackColor);
+                animation.RenderScene(graphics, size, dpi, seconds, moving);
+            }
+            return bitmap;
+        }
+
+        private static bool SameFrame(Bitmap first, Bitmap second)
+        {
+            for (int y = 0; y < first.Height; y += 2)
+                for (int x = 0; x < first.Width; x += 2)
+                    if (first.GetPixel(x, y) != second.GetPixel(x, y)) return false;
+            return true;
+        }
+
+        private static void CheckStartupScene(string iconFile, string outputDirectory)
+        {
+            var size = new Size(720, 520);
+            using (var animation = CreateMeasuredControl(iconFile))
+            using (var first = RenderFrame(animation, size, 96, 0, true))
+            using (var next = RenderFrame(animation, size, 96, .6, true))
+            using (var later = RenderFrame(animation, size, 96, 1.8, true))
+            using (var still = RenderFrame(animation, size, 96, 0, false))
+            using (var stillLater = RenderFrame(animation, size, 96, 9, false))
+            {
+                var scene = StartupAnimation.SceneBounds(size, 96);
+                Check(scene.Width == 400 && scene.Left == 160 && scene.Top == 60, "scene is centered at 400px design scale");
+                Check(StartupAnimation.SceneBounds(new Size(1000, 900), 192).Width == 800,
+                    "scene and its logo scale together at 200 percent DPI");
+                int outsideLogo = 0;
+                bool escaped = false;
+                for (int y = 0; y < size.Height; y += 2)
+                    for (int x = 0; x < size.Width; x += 2)
+                    {
+                        Color pixel = first.GetPixel(x, y);
+                        if (!scene.Contains(x, y) && pixel.ToArgb() != animation.BackColor.ToArgb()) escaped = true;
+                        if (Math.Abs(x - 360) > 80 || Math.Abs(y - 260) > 80)
+                            if (pixel.R > 29 || pixel.B > 58) outsideLogo++;
+                    }
+                Check(outsideLogo > 1500, "first frame already has a halo, rings and points beyond the central icon");
+                Check(!escaped, "all painted layers stay inside the same invalidated scene bounds");
+                Check(!SameFrame(first, next) && !SameFrame(next, later), "deterministic waiting frames move arcs and converging points");
+                Check(SameFrame(still, stillLater) && SameFrame(first, still), "reduced motion keeps the complete first-frame composition static");
+                using (var small = RenderFrame(animation, new Size(180, 140), 192, .6, true))
+                {
+                    Check(StartupAnimation.SceneBounds(small.Size, 192).Width == 124 &&
+                        small.GetPixel(0, 0).ToArgb() == animation.BackColor.ToArgb(), "small windows fit the entire scene without edge clipping");
+                    if (outputDirectory != null)
+                    {
+                        Directory.CreateDirectory(outputDirectory);
+                        small.Save(Path.Combine(outputDirectory, "startup-small-200dpi.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                }
+                if (outputDirectory != null)
+                {
+                    first.Save(Path.Combine(outputDirectory, "startup-t0.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    next.Save(Path.Combine(outputDirectory, "startup-t0.6.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    later.Save(Path.Combine(outputDirectory, "startup-t1.8.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    still.Save(Path.Combine(outputDirectory, "startup-reduced-motion.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    Console.WriteLine("Offscreen source-control frames only (not a real window acceptance): " + Path.GetFullPath(outputDirectory));
+                }
+                // Reuse one canvas: exercise disposal of the small per-frame GDI objects.
+                using (var canvas = new Bitmap(400, 400))
+                using (var graphics = Graphics.FromImage(canvas))
+                using (var process = Process.GetCurrentProcess())
+                {
+                    int before = GetGuiResources(process.Handle, 0);
+                    var duration = Stopwatch.StartNew();
+                    for (int frame = 0; frame < 90; frame++)
+                    {
+                        graphics.Clear(animation.BackColor);
+                        animation.RenderScene(graphics, canvas.Size, 96, frame / 30.0, true);
+                    }
+                    duration.Stop();
+                    Check(GetGuiResources(process.Handle, 0) <= before + 2, "repeated scene painting does not grow GDI object handles");
+                    Console.WriteLine("90 offscreen paint calls: " + duration.ElapsedMilliseconds + " ms (synthetic, not actual-window CPU measurement)");
+                }
+            }
+        }
+
+        private static StartupAnimation CreateMeasuredControl(string iconFile)
+        {
+            using (var source = File.OpenRead(iconFile))
+            {
+                var duration = Stopwatch.StartNew();
+                var animation = new StartupAnimation(source, delegate { return false; });
+                duration.Stop();
+                Console.WriteLine("Control construction including cached halo: " + duration.Elapsed.TotalMilliseconds.ToString("F2") +
+                    " ms (synthetic, not application startup measurement)");
+                return animation;
+            }
+        }
+
         private delegate bool ResourceNameCallback(IntPtr module, IntPtr type, IntPtr name, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern int GetGuiResources(IntPtr process, uint flags);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
         [DllImport("kernel32.dll")] private static extern bool FreeLibrary(IntPtr module);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool EnumResourceNames(IntPtr module, IntPtr type, ResourceNameCallback callback, IntPtr parameter);

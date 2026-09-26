@@ -184,7 +184,7 @@ class ControlHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(value['service_instance_id'], self.control.record['instance_id'])
         self.assertEqual(value['control_protocol'], service_control.PROTOCOL)
-        self.assertEqual(value['desktop_shell_version'], '2.11.2')
+        self.assertEqual(value['desktop_shell_version'], '2.11.3')
         self.assertNotIn('token', value)
 
     def test_accepted_stop_refuses_new_http_work(self):
