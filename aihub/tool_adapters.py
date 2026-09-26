@@ -1,7 +1,8 @@
-"""Read-only local tool discovery and proposed project rules; never launch tools.
+"""Optional harness recipes, registered workspace status and proposed project rules.
 
-Detection is executable metadata, not a running session or sandbox health check.
-No user configuration, task history, credentials or registry values are read.
+Recipes never probe installed software. Status delegates to workspace registration
+and actual legacy collaboration evidence; native configuration and credentials
+are never read, and this module never launches tools.
 """
 import os
 from pathlib import Path
@@ -39,35 +40,34 @@ def _candidates(tool_id, cfg):
                                   portable / 'WorkBuddy/WorkBuddy.exe'])
         known['dsh'].append(root / '10_Apps/DeepSeek_Harness_Launcher/Start-DSH-Fast.ps1')
     # PATH is only an additional executable lookup; it is never executed here.
+    bounded_path = os.pathsep.join(os.environ.get('PATH', '').split(os.pathsep)[:64])
     found = shutil.which({'dsh': 'dsh', 'codex': 'codex',
-                          'zcode': 'ZCode', 'workbuddy': 'WorkBuddy'}[tool_id])
+                          'zcode': 'ZCode', 'workbuddy': 'WorkBuddy'}[tool_id], path=bounded_path)
     return ([Path(found)] if found else []) + known[tool_id]
 
 
+def templates(cfg=None):
+    """Pure optional recipes; inspecting recipes never inspects installed software."""
+    rows = [{'id': identifier, 'name': name, 'template': True,
+             'registration_origin': 'template', 'connection_mode': 'mcp_stdio',
+             'launch_mode': 'manual_cli' if identifier == 'codex' else 'manual_project',
+             'rules_support': rule, 'notes': [note, '可选接入配方；需明确登记后才能用于此工作区。']}
+            for identifier, (name, rule, note) in _TOOLS.items()]
+    rows.append({'id': 'qoder', 'name': 'Qoder', 'template': True,
+                 'registration_origin': 'template', 'connection_mode': 'mcp_stdio',
+                 'launch_mode': 'manual_handoff', 'rules_support': 'AIHub handoff only',
+                 'notes': ['通用接入配方；原生配置和规则格式尚未核实，登记后仅生成 AIHub 专属交接文件。']})
+    return rows
+
+
+def _builtin_status(cfg):
+    """Compatibility accessor for recipe metadata, not actual workspace tools."""
+    return templates(cfg)
+
+
 def status(cfg):
-    """Return tool metadata. available means an entry exists, not controlled launch."""
-    result = []
-    for tool_id, (name, rule, note) in _TOOLS.items():
-        executable = None
-        for candidate in _candidates(tool_id, cfg):
-            try:
-                if candidate.is_file():
-                    executable = str(candidate)
-                    break
-            except OSError:
-                continue
-        detected = executable is not None
-        result.append({
-            'id': tool_id, 'name': name, 'detected': detected, 'available': detected,
-            'launch_mode': 'manual_cli' if tool_id == 'codex' else 'manual_project',
-            'rules_support': rule,
-            'enforcement': 'soft_rules_only',
-            'executable': executable,
-            'notes': [note, '程序入口存在不代表正在运行、已载入项目规则或已启用沙箱。',
-                      'AI Hub 不会自动启动工具、修改全局配置或隔离既有会话。'
-                      if detected else '未找到已知入口；可手动选择项目，安装位置尚未验证。'],
-        })
-    return result
+    from . import harnesses
+    return harnesses.list_tools(cfg)
 
 
 def _ps_literal(value):
@@ -75,20 +75,29 @@ def _ps_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def project_rules(tool_id, project_root):
+def project_rules(tool_id, project_root, cfg=None):
     """Propose native rule + tool handoff files; the caller owns conflict handling.
 
     The AGENTS.md content is identical for the three readers, allowing callers to
     deduplicate it. Never write these over existing project rules.
     """
+    custom = None
+    if cfg is not None:
+        from . import harnesses
+        registered = harnesses.get(cfg, tool_id)
+        if not registered['enabled']:
+            raise ValueError('工作端已停用，请先启用或选择其他工作端。')
     if tool_id not in _TOOLS:
-        raise ValueError('Unknown tool adapter')
+        from . import harnesses
+        if cfg is None:
+            raise ValueError('Unknown tool adapter')
+        custom = registered
     root = os.fspath(project_root)
     if not root or any(ord(char) < 32 for char in root):
         raise ValueError('Project path must not contain control characters')
     if not Path(root).is_absolute():
         raise ValueError('Project path must be absolute')
-    name, rule, _note = _TOOLS[tool_id]
+    name, rule, _note = _TOOLS[tool_id] if custom is None else (custom['name'], None, '')
     common = (
         '# AI Hub 项目工作规则\n\n'
         '- 开始任务先读本目录 TASK_BRIEF.md 与现有项目说明；先确认工作目录就是本项目。\n'
@@ -99,6 +108,11 @@ def project_rules(tool_id, project_root):
         '- 本文件是规则约束；AI Hub 未启用系统硬隔离或全盘写入监控，规则本身不能阻止越界写入。\n'
     )
     handoff = f'# {name} 项目接入\n\n项目目录：`{root}`\n\n'
+    if custom is not None:
+        handoff += ('本文件是 AI Hub 专属交接说明，不代表工具原生支持 AGENTS.md 或已自动加载规则。\n\n'
+                    '请在工具中手动打开本项目，并明确交付目录、授权范围和需读取的任务说明；核对实际工作目录。'
+                    '登记程序路径或 MCP 模式不会启动工具、修改其配置或建立系统隔离。\n\n' + common)
+        return [(f'AIHUB_HANDOFF_{tool_id}.md', handoff)]
     if tool_id == 'codex':
         command = f"& 'codex.cmd' --cd {_ps_literal(root)} --sandbox workspace-write --ask-for-approval on-request"
         handoff += (

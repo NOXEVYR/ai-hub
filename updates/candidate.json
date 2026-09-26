@@ -1,0 +1,14 @@
+{
+  "schema": "ai-hub-update-v1",
+  "app": "ai-hub",
+  "channel": "candidate",
+  "version": "2.13.0",
+  "commit": "6e51ff359b41391b7a4ce450eea7d049637053e3",
+  "package": {
+    "bytes": 1409739,
+    "sha256": "0525c6e032185b8fff9a1c5fb7a2335be4abf7e7fe81619b5be94226f9f74660"
+  },
+  "notes": "新增能力中心：按用途与工作端筛选 Skill、接口与环境状态，支持自定义来源；完善右键目录操作和新电脑工作区引导。发现不等于接口已接通。",
+  "min_updater_version": "2.12.0"
+}
+

@@ -7,7 +7,7 @@ import time
 import unicodedata
 import uuid
 
-from . import config, tool_adapters, workspace
+from . import config, tool_adapters, workspace, harnesses
 
 TOOLS = {'codex': 'Codex', 'zcode': 'ZCode', 'dsh': 'DSH', 'workbuddy': 'WorkBuddy'}
 TOKEN_SECONDS = 600
@@ -27,14 +27,15 @@ def _name(value):
     return value
 
 
-def _documents(root, selected):
-    display = '、'.join(TOOLS[key] for key in selected)
+def _documents(root, selected, cfg=None):
+    names = {item['id']: item['name'] for item in harnesses.list_tools(cfg)} if cfg is not None else TOOLS
+    display = '、'.join(names[key] for key in selected)
     rules = f'''# 项目工作规则
 
 项目根目录：`{root}`
 选择工具：{display}
 
-- Codex、ZCode、DSH、WorkBuddy 使用同一目录约定。执行前先读本 AGENTS.md、README.md、TASK_BRIEF.md，以及上级工作区规则。
+- 所选工作端使用同一目录约定；通用交接文件须主动交给工具阅读。执行前先读本 AGENTS.md、README.md、TASK_BRIEF.md，以及上级工作区规则。
 - Inputs 为只读输入，不修改、删除或覆盖原件；模型、训练数据和外部输入同样保持只读。
 - 过程脚本、日志和临时文件只写 Work；运行产物写 Outputs；确认后的正式交付写 Deliverables。
 - 允许更新项目 README.md 中的记录和链接；其余管理文件由 AI Hub 管理。新增任务须先在 TASK_BRIEF.md 明确目标与验收条件。
@@ -76,14 +77,19 @@ def _documents(root, selected):
 由执行工具记录本次目标、产物路径、验证结果和正式交付链接。
 '''
     native_rules = {}
+    generic_handoffs = {}
     handoffs = []
     for key in selected:
-        for relative, content in tool_adapters.project_rules(key, root):
+        for relative, content in tool_adapters.project_rules(key, root, cfg=cfg):
             if not isinstance(content, str):
                 raise ValueError('工具规则必须是文本。')
             if relative == 'AGENTS.md':
                 continue  # The project has one authoritative common AGENTS.md.
             if relative == f'TOOL_HANDOFF_{key}.md':
+                handoffs.append(content)
+                continue
+            if relative == f'AIHUB_HANDOFF_{key}.md':
+                generic_handoffs[relative] = content
                 handoffs.append(content)
                 continue
             if relative != 'CODEBUDDY.md':
@@ -97,11 +103,12 @@ def _documents(root, selected):
                 'name': root.name, 'tools': {key: {'mode': 'guidance_only'} for key in selected},
                 'enforcement': 'guidance_only', 'input_read_only': ['Inputs'],
                 'write_directories': ['Work', 'Outputs', 'Deliverables'],
-                'prompt_path': 'TASK_BRIEF.md', 'native_rules': ['AGENTS.md'] + list(native_rules)}
+                'prompt_path': 'TASK_BRIEF.md', 'native_rules': ['AGENTS.md'] + list(native_rules),
+                'handoff_files': list(generic_handoffs)}
     return {str(root / name): content.encode('utf-8') for name, content in
             [('README.md', readme), ('AGENTS.md', rules), ('TASK_BRIEF.md', brief)]} | {
             str(root / '.aihub-project.json'): workspace._encoded(manifest)} | {
-            str(root / name): content.encode('utf-8') for name, content in native_rules.items()}
+            str(root / name): content.encode('utf-8') for name, content in {**native_rules, **generic_handoffs}.items()}
 
 
 def _plan(cfg, body):
@@ -116,10 +123,11 @@ def _plan(cfg, body):
         base = Path(config.validate_asset_root(cfg.get('ai_root')))
         name = _name(body.get('name'))
         selected = body.get('tools')
-        if (not isinstance(selected, list) or not selected or len(selected) > len(TOOLS) or
-                any(not isinstance(key, str) or key not in TOOLS for key in selected) or
+        allowed = harnesses.allowed_ids(cfg)
+        if (not isinstance(selected, list) or not selected or len(selected) > len(allowed) or
+                any(not isinstance(key, str) or key not in allowed for key in selected) or
                 len(set(selected)) != len(selected)):
-            raise ValueError('请选择不重复的 Codex、ZCode、DSH、WorkBuddy 工具列表。')
+            raise ValueError('请选择已登记、已启用且不重复的工作端。')
         project = base / '40_Projects' / name
         result.update(root=str(project), tools=list(selected))
         config.validate_asset_root(str(project), must_exist=False)
@@ -136,7 +144,7 @@ def _plan(cfg, body):
             states[str(path)] = workspace._root_state(path)
             if path != base:
                 result['directories'].append({'path': str(path), 'action': 'keep' if path.exists() else 'create'})
-        documents = _documents(project, selected)
+        documents = _documents(project, selected, cfg=cfg)
         result['files'] = [{'path': path, 'action': 'create'} for path in documents]
         outputs = cfg.get('output_roots', [])
         if not isinstance(outputs, list) or any(not isinstance(p, str) or not p for p in outputs):
@@ -148,7 +156,7 @@ def _plan(cfg, body):
 
 
 def preview(cfg, body):
-    with _lock:
+    with harnesses.mutation_guard(), _lock:
         now = time.time()
         for token in list(_previews):
             if _previews[token]['expires_at'] <= now:
@@ -182,7 +190,7 @@ def _rollback(files, directories):
 
 
 def apply(cfg, token):
-    with _lock:
+    with harnesses.mutation_guard(), _lock:
         pending = _previews.get(token) if isinstance(token, str) else None
         if not pending or pending['expires_at'] <= time.time():
             raise ValueError('预览不存在或已过期，请重新预览。')

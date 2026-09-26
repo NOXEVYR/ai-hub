@@ -48,8 +48,8 @@ class RegistryHTTP(unittest.TestCase):
     def test_new_assets_and_routes_render_without_real_asset_requests(self):
         for url,marker in [('/','data-page="projects"'),('/registry.js','effective_validation_status'),('/app.js','verificationBadge'),('/atelier.css','project-grid')]:
             self.assertIn(marker,self.ok('GET',url))
-        health=self.ok('GET','/api/health');self.assertEqual(health['version'],'2.6.0')
-        self.assertEqual(health['desktop_shell_version'],'2.4.1')
+        health=self.ok('GET','/api/health');self.assertEqual(health['version'],'2.13.0')
+        self.assertEqual(health['desktop_shell_version'],'2.13.0')
         self.assertFalse(health['jobs_running'])
 
 

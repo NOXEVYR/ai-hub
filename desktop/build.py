@@ -24,8 +24,18 @@ def main():
     parser.add_argument("--sdk-package", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--render-output", type=Path, help="With --test, save offline source-control frames (not real-window screenshots)")
+    parser.add_argument("--update-render-output", type=Path, help="With --test, save an off-screen native update dialog preview")
     parser.add_argument("--alias-root", type=Path, help="Optional existing junction to test against the physical application folder")
+    parser.add_argument("--startup-guard-candidate", type=Path,
+                        help="With --test, also run the native update-race fixture against this candidate EXE")
     args = parser.parse_args()
+    if (args.render_output or args.update_render_output) and not args.test:
+        parser.error("render output options require --test")
+    if args.startup_guard_candidate and not args.test:
+        parser.error("--startup-guard-candidate requires --test")
+    if args.startup_guard_candidate and not args.startup_guard_candidate.is_file():
+        parser.error("--startup-guard-candidate must name an existing EXE")
     if hashlib.sha256(args.sdk_package.read_bytes()).hexdigest() != SDK_SHA256:
         raise SystemExit("WebView2 SDK archive SHA-256 does not match the pinned official package.")
     compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
@@ -46,11 +56,6 @@ def main():
                 (folder / name).write_bytes(archive.read(member))
         common = [str(compiler), "/nologo", "/optimize+", "/platform:x64", "/utf8output",
                   "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Web.Extensions.dll"]
-        if args.test:
-            tests = folder / "desktop-tests.exe"
-            subprocess.run(common + ["/target:exe", f"/out:{tests}", str(DESKTOP / "Core.cs"),
-                                      str(DESKTOP / "Tests.cs")], check=True)
-            subprocess.run([str(tests), str(ROOT)] + ([str(args.alias_root)] if args.alias_root else []), check=True)
         exe = folder / "AI Hub.exe"
         command = common + ["/target:winexe", f"/out:{exe}",
             "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
@@ -60,12 +65,33 @@ def main():
             f"/resource:{ROOT / 'frontend/brand.ico'},brand.ico"]
         for name in members:
             command.append(f"/resource:{folder / name},{name}")
-        subprocess.run(command + [str(DESKTOP / "Core.cs"), str(DESKTOP / "Program.cs")], check=True)
+        subprocess.run(command + [str(DESKTOP / "Core.cs"), str(DESKTOP / "AppUpdate.cs"),
+                                  str(DESKTOP / "StartupAnimation.cs"), str(DESKTOP / "Program.cs")], check=True)
+        if args.test:
+            tests = folder / "desktop-tests.exe"
+            test_command = common + ["/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
+                                      "/target:exe", f"/out:{tests}", str(DESKTOP / "Core.cs"),
+                                      str(DESKTOP / "AppUpdate.cs"), str(DESKTOP / "Tests.cs")]
+            subprocess.run(test_command, check=True)
+            candidate = args.startup_guard_candidate.resolve() if args.startup_guard_candidate else exe
+            test_args = [str(tests), str(ROOT), "--candidate-exe", str(candidate)]
+            if args.alias_root:
+                test_args += ["--alias-root", str(args.alias_root)]
+            if args.update_render_output:
+                test_args += ["--update-render-output", str(args.update_render_output.resolve())]
+            subprocess.run(test_args, check=True)
+            icon_tests = folder / "icon-tests.exe"
+            subprocess.run(common + ["/target:exe", "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll", f"/out:{icon_tests}",
+                                      str(DESKTOP / "StartupAnimation.cs"), str(DESKTOP / "IconTests.cs")], check=True)
+            subprocess.run([str(icon_tests), str(ROOT / "frontend/brand.ico"), str(exe)] +
+                           ([str(args.render_output.resolve())] if args.render_output else []), check=True)
         shutil.copy2(exe, output)
     result = {"exe": str(output), "bytes": output.stat().st_size,
               "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
               "architecture": "x64", "subsystem": "Windows GUI", "sdk": SDK_VERSION,
-              "sdk_sha256": SDK_SHA256, "contains_user_data": False}
+              "sdk_sha256": SDK_SHA256, "contains_user_data": False,
+              "display_name": "曜核", "desktop_version": "2.13.0.0",
+              "icon_sha256": hashlib.sha256((ROOT / "frontend/brand.ico").read_bytes()).hexdigest()}
     output.with_suffix(".build.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
 

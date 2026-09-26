@@ -2,12 +2,15 @@
 """HTTP API 路由。所有 /api/* 由 dispatch() 处理。"""
 import json
 import collections
+import copy
 import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import time
 import urllib.parse
+import uuid
 
 from . import config as cfgmod
 from . import jobs, organization, organizer
@@ -888,7 +891,10 @@ def organizer_action(db, cfg, params, body):
 
 
 def report_generate(db, cfg, params, body):
-    """生成当前盘点 Markdown 报告到 data/reports。"""
+    """Write new managed reports centrally; preserve earlier local reports."""
+    cfg = copy.deepcopy(cfg)
+    folder = management.generated_report_dir(cfg, cfgmod.REPORTS_DIR)
+    cfgmod._check_ancestors(str(folder))
     ov = json.loads(overview(db, cfg, {}, body)[2].decode("utf-8"))
     now = time.strftime("%Y-%m-%d %H:%M")
     lines = [f"# AI Hub 盘点报告 · {now}", "",
@@ -919,9 +925,11 @@ def report_generate(db, cfg, params, body):
     lines += ["", "## 更新状态分布", ""]
     for k, v in ov["state_counts"].items():
         lines.append(f"- {k}: {v}")
-    name = f"盘点报告_{time.strftime('%Y%m%d_%H%M')}.md"
-    path = os.path.join(cfgmod.REPORTS_DIR, name)
-    with open(path, "w", encoding="utf-8") as f:
+    name = f"盘点报告_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.md"
+    os.makedirs(folder, exist_ok=True)
+    cfgmod._check_ancestors(str(folder))
+    path = os.path.join(folder, name)
+    with open(path, "x", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return _json_bytes({"ok": True, "name": name, "path": path})
 
@@ -1008,6 +1016,53 @@ def workflow_summary(db, cfg, params, body):
     return _json_bytes(management.workflows(cfg))
 
 
+def context_reveal(db, cfg, params, body):
+    """Reveal an existing listed resource, never execute a user-supplied path."""
+    import stat
+    import subprocess
+    from . import capabilities
+    if not isinstance(body, dict) or set(body) != {'kind', 'path'}:
+        return _err('请选择列表中的文件。')
+    path, kind = body['path'], body['kind']
+    if not isinstance(path, str) or not path or not os.path.isabs(path) or '\x00' in path:
+        return _err('文件路径无效。')
+    if kind == 'workflow':
+        roots = [cfg.get('ai_root', '')] + list(cfg.get('scan_roots') or [])
+        if not any(isinstance(root, str) and os.path.isabs(root) and cfgmod._within(path, root) for root in roots):
+            return _err('该工作流位于当前工作区与登记来源之外。', 403)
+        items = management.workflows(cfg).get('items', [])
+        allowed = {p for item in items for p in (item.get('path'), item.get('copy')) if isinstance(p, str)}
+    elif kind == 'skill':
+        allowed = {item['path'] for item in capabilities.discover(cfg).get('suggestions', [])}
+    elif kind == 'indexed':
+        roots = [cfg.get('ai_root', '')] + list(cfg.get('scan_roots') or []) + list(cfg.get('output_roots') or [])
+        if not any(isinstance(root, str) and os.path.isabs(root) and cfgmod._within(path, root) for root in roots):
+            return _err('该路径位于当前登记来源之外。', 403)
+        known = any(isinstance(root, str) and root and cfgmod._key(root) == cfgmod._key(path) for root in roots)
+        if not known:
+            known = (db.one('SELECT path FROM files WHERE path=? OR parent=? LIMIT 1', (path,path))
+                or db.one('SELECT path FROM images WHERE path=? LIMIT 1', (path,))
+                or db.one('SELECT path FROM dirs WHERE path=? LIMIT 1', (path,)))
+        allowed = {path} if known else set()
+    else:
+        return _err('不支持的资源类型。', 400)
+    if path not in allowed:
+        return _err('该文件不在当前列表的可访问来源中，请刷新后重试。', 403)
+    try:
+        cfgmod._check_ancestors(os.path.dirname(path))
+        info = os.lstat(path)
+        is_directory = kind == 'indexed' and stat.S_ISDIR(info.st_mode)
+        if cfgmod._is_reparse(info) or not (stat.S_ISREG(info.st_mode) or is_directory):
+            return _err('只支持定位普通文件。', 403)
+        if os.name != 'nt':
+            return _err('当前系统暂不支持资源管理器定位，请复制路径。', 409)
+        executable = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'explorer.exe')
+        subprocess.Popen([executable, path] if is_directory else [executable, '/select,', path])
+    except (ValueError, OSError):
+        return _err('文件已移动、来源不可访问或资源管理器未能打开。', 409)
+    return _json_bytes({'ok': True})
+
+
 def registry_request(db, cfg, params, body):
     action = _q(params, "action")
     if not isinstance(body, dict):
@@ -1031,7 +1086,149 @@ def registry_request(db, cfg, params, body):
             return _err(str(error))
 
 
+def workcenter_request(db, cfg, params, body):
+    from . import workcenter
+    import copy
+    action = _q(params, 'action')
+    try:
+        if action in {'classify', 'reveal'}:
+            if not isinstance(body, dict):
+                return _err('工作中心请求必须是对象')
+            with organization.LOCK:
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                payload = {k: v for k, v in body.items() if k != '_workspace_root'}
+                if action == 'classify':
+                    return _json_bytes(workcenter.classify(cfg, payload))
+                if set(payload) != {'document_id'}:
+                    return _err('打开目录请求字段不合法')
+                path = workcenter.resolve_document(cfg, payload['document_id'])
+                import subprocess
+                subprocess.Popen(['explorer.exe', '/select,', str(path)])
+                return _json_bytes({'ok': True})
+        snapshot = copy.deepcopy(cfg)
+        query = {k: _q(params, k) for k in params if k != 'action'}
+        if action == 'documents':
+            result = workcenter.list_documents(snapshot, query)
+        elif action == 'projects':
+            result = workcenter.list_projects(snapshot, query)
+        elif action == 'document':
+            ident = query.get('id')
+            if not ident and query.get('path'):
+                found = workcenter.lookup_document(snapshot, query['path'])
+                ident = found['id'] if isinstance(found, dict) else found
+            result = workcenter.read_document(snapshot, ident)
+        else:
+            return _err('未知工作中心操作', 404)
+        return _json_bytes({**result, 'workspace_root': snapshot.get('ai_root', ''), 'root': snapshot.get('ai_root', '')})
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('工作索引暂时不可用，已有文件未修改。', 503)
+
+
+def capabilities_request(db, cfg, params, body):
+    from . import capabilities
+    import copy
+    import hashlib
+    def source_revision(value):
+        return hashlib.sha256(json.dumps(value.get('capability_sources', []), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    action = _q(params, 'action')
+    try:
+        if action == 'sources':
+            if not isinstance(body, dict) or set(body) != {'sources', 'revision', '_workspace_root'}:
+                return _err('发现来源请求格式无效。')
+            with organization.LOCK:
+                if not isinstance(body['_workspace_root'], str) or cfgmod._key(body['_workspace_root']) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                if body['revision'] != source_revision(cfg):
+                    return _err('发现来源已被修改，请刷新后再保存。', 409)
+                sources = capabilities.validate_source_settings({'sources': body['sources']})
+                updated = copy.deepcopy(cfg)
+                updated['capability_sources'] = sources
+                cfgmod.save_config(updated)
+                cfg.clear()
+                cfg.update(updated)
+                return _json_bytes({'saved': True, 'configured_sources': sources, 'sources_revision': source_revision(cfg), 'workspace_root': cfg.get('ai_root', '')})
+        if action == 'dispatch':
+            if not isinstance(body, dict):
+                return _err('能力调度请求必须是对象')
+            with organization.LOCK:
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                result = capabilities.execute(cfg, 'capability_dispatch',
+                    {k: v for k, v in body.items() if k != '_workspace_root'}, actor='ui')
+                response_root = cfg.get('ai_root', '')
+        else:
+            snapshot = copy.deepcopy(cfg)
+            payload = body if action == 'recommend' else {k: _q(params, k) for k in params if k != 'action'}
+            if not isinstance(payload, dict):
+                return _err('能力请求必须是对象')
+            result = capabilities.execute(snapshot, 'capability_' + action, payload, actor='ui')
+            response_root = snapshot.get('ai_root', '')
+            if action == 'discover':
+                result = {**result, 'configured_sources': snapshot.get('capability_sources', []), 'sources_revision': source_revision(snapshot)}
+        return _json_bytes({**result, 'workspace_root': response_root, 'root': response_root})
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('能力目录暂时不可用，未确认创建调度任务。', 503)
+
+
+def harness_request(db, cfg, params, body):
+    from . import harness_api, harnesses
+    import copy
+    action = _q(params, 'action')
+    try:
+        with organization.LOCK:
+            snapshot = copy.deepcopy(cfg)
+            if action == 'save':
+                if not isinstance(body, dict):
+                    return _err('工作端登记必须是对象。')
+                expected = body.get('_workspace_root')
+                if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(snapshot.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新接入中心后重试。', 409)
+                result = harness_api.save(snapshot, {k: v for k, v in body.items() if k != '_workspace_root'})
+            elif action == 'discover':
+                result = harnesses.discover(snapshot)
+            elif action == 'check':
+                result = harness_api.check(snapshot, _q(params, 'id'))
+            elif action == 'config':
+                result = harness_api.configuration(snapshot, _q(params, 'id'), _q(params, 'client_id'))
+            else:
+                result = harness_api.list_tools(snapshot)
+            return _json_bytes({**result, 'root': snapshot.get('ai_root') or '', 'workspace_root': snapshot.get('ai_root') or ''})
+    except harnesses.RevisionConflict as error:
+        return _err(str(error), 409)
+    except PermissionError as error:
+        return _err(str(error), 403)
+    except (ValueError, TypeError, KeyError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+    except sqlite3.Error:
+        return _err('工作端登记暂时不可用，请稍后重试。', 503)
+
+
 ROUTES = [
+    ('GET', r'^/api/harnesses$', harness_request),
+    ('GET', r'^/api/harnesses/(?P<action>discover|check|config)$', harness_request),
+    ('POST', r'^/api/harnesses/(?P<action>save)$', harness_request),
+    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document)$', workcenter_request),
+    ('POST', r'^/api/workcenter/(?P<action>classify|reveal)$', workcenter_request),
+    ('POST', r'^/api/context/reveal$', context_reveal),
+    ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
+    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch|sources)$', capabilities_request),
     ("GET", r"^/api/workspace/status$", workspace_environment_status),
     ("POST", r"^/api/workspace/(?P<action>preview|apply)$", workspace_environment_action),
     ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
@@ -1043,7 +1240,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.6.0", "desktop_shell_version": "2.4.1", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.0", "desktop_shell_version": "2.13.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),
@@ -1077,6 +1274,30 @@ ROUTES = [
 
 
 def dispatch(db, cfg, method, path, params, body):
+    # Collaboration has its own root-partitioned store; never changes model data.
+    if path == '/api/collaboration/status' and method == 'GET':
+        from . import collaboration_api
+        try:
+            return _json_bytes(collaboration_api.status(cfg))
+        except (ValueError, OSError) as error:
+            return _err(str(error), 400)
+        except sqlite3.Error:
+            return _err('协作存储暂时不可用，请稍后重试；没有确认完成本次操作。', 503)
+    match = re.fullmatch(r'/api/collaboration/(mcp/)?([a-z_]+)', path)
+    if match and method == 'POST':
+        from . import collaboration_api
+        try:
+            with organization.LOCK:
+                return _json_bytes(collaboration_api.execute(cfg, match[2], body,
+                                   actor='mcp' if match[1] else 'ui'))
+        except PermissionError as error:
+            return _err(str(error), 403)
+        except (ValueError, TypeError) as error:
+            return _err(str(error), 400)
+        except OSError as error:
+            return _err(str(error), 409)
+        except sqlite3.Error:
+            return _err('协作存储暂时不可用，请稍后重试；没有确认完成本次操作。', 503)
     for m, rx, fn in ROUTES:
         match = re.match(rx, path)
         if match and m == method:

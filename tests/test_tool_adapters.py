@@ -3,7 +3,7 @@ from pathlib import Path, PureWindowsPath
 import unittest
 from unittest import mock
 
-from aihub import tool_adapters
+from aihub import config, harnesses, tool_adapters
 
 
 class ToolAdaptersTests(unittest.TestCase):
@@ -32,36 +32,30 @@ class ToolAdaptersTests(unittest.TestCase):
                 self.assertIn(root / '10_Apps/DeepSeek_Harness_Launcher/Start-DSH-Fast.ps1',
                               tool_adapters._candidates('dsh', {'ai_root': str(root)}))
 
-    def test_installed_entry_does_not_certify_current_version(self):
-        with tempfile.TemporaryDirectory() as directory:
-            executable = Path(directory) / 'tool.exe'
-            executable.touch()
-            with mock.patch.object(tool_adapters, '_candidates', return_value=[executable]):
-                rows = tool_adapters.status({})
-            for row in rows:
-                self.assertTrue(row['detected'])
-                self.assertIn('当前安装版本仍须确认', row['notes'][0])
+    def test_templates_do_not_probe_or_claim_installed_entries(self):
+        with mock.patch.object(tool_adapters, '_candidates', side_effect=AssertionError('no probing')):
+            self.assertEqual(tool_adapters.status({}), [])
+            recipes = tool_adapters.templates({})
+        self.assertEqual(len(recipes), 5)
+        self.assertTrue(all(row['template'] for row in recipes))
+        self.assertTrue(all('detected' not in row and 'enabled' not in row for row in recipes))
+        self.assertIn('当前安装版本仍须确认', recipes[0]['notes'][0])
 
-    def test_missing_is_not_available_or_isolated(self):
-        with mock.patch.object(tool_adapters, '_candidates', return_value=[]):
-            rows = tool_adapters.status({})
-        self.assertEqual([r['id'] for r in rows], ['codex', 'zcode', 'dsh', 'workbuddy'])
-        for row in rows:
-            self.assertFalse(row['available'])
-            self.assertFalse(row['detected'])
-            self.assertIsNone(row['executable'])
-            self.assertEqual(row['enforcement'], 'soft_rules_only')
-
-    def test_detection_only_stats_entry_does_not_read_or_execute(self):
+    def test_registered_detection_only_stats_entry_does_not_read_or_execute(self):
         with tempfile.TemporaryDirectory() as directory:
-            entry = Path(directory) / 'synthetic.exe'
+            root = Path(directory)
+            entry = root / 'synthetic.exe'
             entry.write_bytes(b'not an executable')
-            with mock.patch.object(tool_adapters, '_candidates', return_value=[entry]), \
-                    mock.patch.object(Path, 'read_bytes', side_effect=AssertionError('read')), \
-                    mock.patch.object(Path, 'read_text', side_effect=AssertionError('read')):
-                rows = tool_adapters.status({})
-            self.assertTrue(all(r['detected'] for r in rows))
-            self.assertTrue(all(r['executable'] == str(entry) for r in rows))
+            cfg = {'ai_root': str(root), 'workspace_managed': True}
+            with mock.patch.object(config, 'DATA_DIR', str(root / 'data')):
+                harnesses.save(cfg, {'id': 'codex', 'revision': 0, 'executable': str(entry)})
+                with mock.patch.object(Path, 'read_bytes', side_effect=AssertionError('read')), \
+                        mock.patch.object(Path, 'read_text', side_effect=AssertionError('read')):
+                    rows = tool_adapters.status(cfg)
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0]['detected'])
+            self.assertEqual(rows[0]['executable'], str(entry))
+            self.assertIn('当前安装版本仍须确认', rows[0]['notes'][0])
             self.assertEqual(entry.read_bytes(), b'not an executable')
 
     def test_project_files_are_proposals_with_native_names_and_no_writes(self):
