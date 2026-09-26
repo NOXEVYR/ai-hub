@@ -1,15 +1,17 @@
-# 曜核 2.12.0 候选下载
+# 曜核 2.13.0 候选下载
 
-新增独立软件更新窗口：手动检查、下载校验与重启安装，可选自动下载、退出安装。更新保留资产与用户数据，拒绝覆盖本地改动，安装前备份，失败恢复程序文件。
+新增能力中心：用途与工作端交叉筛选、本机 Skill 与接口线索发现、自定义来源；补齐上下文右键操作和新电脑工作区引导。
 
-- [Windows x64 包](AI-Hub-v2.12.0-Windows-x64.zip) — 1,371,224 字节
-- [源码包](AI-Hub-v2.12.0-Source.zip) — 976,301 字节
-- [SHA-256](AI-Hub-v2.12.0-SHA256.txt) · [包清单](AI-Hub-v2.12.0-release.json)
-- [更新说明](../docs/RELEASE_2.12.0.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
+- [Windows x64 包](AI-Hub-v2.13.0-Windows-x64.zip) — 1,409,739 字节
+- [源码包](AI-Hub-v2.13.0-Source.zip) — 1,014,810 字节
+- [SHA-256](AI-Hub-v2.13.0-SHA256.txt) · [包清单](AI-Hub-v2.13.0-release.json)
+- [更新说明](../docs/RELEASE_2.13.0.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
 
-当前为候选版。2.11.3 及更早版本没有软件更新器，首次升级需替换程序包。程序包不含用户数据、配置、模型、图库或凭据。
+当前为候选版。2.12.0 可使用软件更新器；更早版本首次升级需替换程序包。包不含用户数据、配置、模型、图库或凭据。
 
 ## 历史下载保留
+
+- 2.12.0：[Windows](AI-Hub-v2.12.0-Windows-x64.zip) · [源码](AI-Hub-v2.12.0-Source.zip) · [SHA-256](AI-Hub-v2.12.0-SHA256.txt)
 
 - 2.11.3：[Windows](https://raw.githubusercontent.com/NOXEVYR/ai-hub/da0ddb903f76f56304082f8292d83b11f376eb8b/releases/AI-Hub-v2.11.3-Windows-x64.zip) · [源码](https://raw.githubusercontent.com/NOXEVYR/ai-hub/da0ddb903f76f56304082f8292d83b11f376eb8b/releases/AI-Hub-v2.11.3-Source.zip) · [SHA-256](AI-Hub-v2.11.3-SHA256.txt)
 - 2.11.2：[Windows](https://raw.githubusercontent.com/NOXEVYR/ai-hub/a47adc78f2690bea496522a430519f878e0ce8c7/releases/AI-Hub-v2.11.2-Windows-x64.zip) · [源码](https://raw.githubusercontent.com/NOXEVYR/ai-hub/a47adc78f2690bea496522a430519f878e0ce8c7/releases/AI-Hub-v2.11.2-Source.zip) · [SHA-256](AI-Hub-v2.11.2-SHA256.txt)

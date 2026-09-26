@@ -194,7 +194,7 @@ class Bridge:
             return {'protocolVersion': version if version in VERSIONS else VERSIONS[0],
                     'capabilities': {'tools': {'listChanged': False},
                                      'resources': {'subscribe': False, 'listChanged': False}},
-                    'serverInfo': {'name': 'aihub-collaboration', 'version': '2.12.0'},
+                    'serverInfo': {'name': 'aihub-collaboration', 'version': '2.13.0'},
                     'instructions': GUIDE}
         if method == 'notifications/initialized':
             if self.initialized:

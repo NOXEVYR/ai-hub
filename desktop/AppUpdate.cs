@@ -643,7 +643,7 @@ namespace AIHub.Desktop
             string current = Value(status, "current_version");
             stateLabel.Text = StateText(state) + (String.IsNullOrEmpty(channel) ? "" : " · " + (channel == "candidate" ? "候选版" : channel));
             stateLabel.ForeColor = state == "failed" ? Coral : (state == "ready" || state == "succeeded" ? Mint : Ink);
-            currentVersionValue.Text = BreakVersion(String.IsNullOrEmpty(current) ? "2.12.0" : current);
+            currentVersionValue.Text = BreakVersion(String.IsNullOrEmpty(current) ? "2.13.0" : current);
             latestVersionValue.Text = BreakVersion(String.IsNullOrEmpty(latest) ? "—" : latest);
             currentVersionValue.Font = !String.IsNullOrEmpty(current) && current.Length > 18 ? LongVersionFont : VersionFont;
             latestVersionValue.Font = !String.IsNullOrEmpty(latest) && latest.Length > 18 ? LongVersionFont : VersionFont;

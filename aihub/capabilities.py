@@ -11,7 +11,7 @@ import sqlite3
 import stat
 import threading
 
-from . import collaboration, config
+from . import collaboration, config, capability_discovery
 
 DOMAINS = {'video', 'image', 'audio', 'code', 'research', 'document', 'automation'}
 KINDS = {'skill', 'mcp_tool'}
@@ -311,6 +311,92 @@ def catalog(cfg, body=None):
             'limitations': ['能力来自客户端声明，未执行验证。', '近期心跳不是实时在线保证。', '调度只排队，由工作端领取并执行。']}
 
 
+def catalog_readonly(cfg):
+    """Read existing declarations without creating directories, DBs, tables, or sidecars."""
+    root = collaboration.root_path(cfg)
+    directory = Path(config.DATA_DIR)
+    config._check_ancestors(str(directory))
+    path = directory / 'capabilities.sqlite3'
+    if not os.path.lexists(path):
+        return None
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        candidate = Path(str(path) + suffix)
+        if os.path.lexists(candidate):
+            info = candidate.lstat()
+            if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return None
+    wal, shm = Path(str(path) + '-wal'), Path(str(path) + '-shm')
+    if os.path.lexists(wal) and not os.path.lexists(shm):
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as con:
+            con.row_factory = sqlite3.Row
+            tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'capabilities' not in tables:
+                return None
+            columns = {row[1] for row in con.execute('PRAGMA table_info(capabilities)')}
+            required = {'root', 'client_id', 'key', 'id', 'tool', 'payload', 'updated_at'}
+            if not required <= columns:
+                return None
+            records = [dict(r) for r in con.execute(
+                'SELECT * FROM capabilities WHERE root=? ORDER BY client_id,key', (config._key(root),))]
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+
+    clients = {}
+    collab_path = directory / 'collaboration.sqlite3'
+    if os.path.lexists(collab_path):
+        safe = True
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            candidate = Path(str(collab_path) + suffix)
+            if os.path.lexists(candidate):
+                info = candidate.lstat()
+                if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    safe = False
+                    break
+        if safe and not (os.path.lexists(Path(str(collab_path) + '-wal')) and
+                         not os.path.lexists(Path(str(collab_path) + '-shm'))):
+            try:
+                with contextlib.closing(sqlite3.connect(
+                        collab_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as con:
+                    con.row_factory = sqlite3.Row
+                    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if 'clients' in tables:
+                        columns = {row[1] for row in con.execute('PRAGMA table_info(clients)')}
+                        if {'root', 'id', 'last_seen'} <= columns:
+                            clients = {r['id']: r['last_seen'] for r in con.execute(
+                                'SELECT id,last_seen FROM clients WHERE root=?', (config._key(root),))}
+            except (OSError, sqlite3.Error, ValueError):
+                clients = {}
+    try:
+        from . import harnesses
+        enabled_tools = {item['id'] for item in harnesses.list_tools(cfg)
+                         if item.get('enabled') and item.get('connection_mode') == 'mcp_stdio'}
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        enabled_tools = set()
+    now = dt.datetime.now(dt.timezone.utc)
+    items = []
+    for record in records:
+        try:
+            item = _capability(json.loads(record['payload']))
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+        last_seen = clients.get(record['client_id'])
+        try:
+            age = (now - dt.datetime.fromisoformat(last_seen)).total_seconds() if last_seen else None
+        except (ValueError, TypeError):
+            age = None
+        enabled = record['tool'] in enabled_tools
+        recent = enabled and age is not None and 0 <= age <= 300
+        item.update(tool_enabled=enabled, id=record['id'], client_id=record['client_id'], target_tool=record['tool'],
+                    updated_at=record['updated_at'], declaration_status='declared', verification_status='unverified',
+                    client_online=recent, client_status='recent_heartbeat' if recent else 'not_recently_seen',
+                    last_seen=last_seen, heartbeat_window_seconds=300, execution_mode='harness_queue', worker_required=True)
+        items.append(item)
+    return {'items': items, 'total': len(items), 'worker_required': True,
+            'limitations': ['能力来自客户端声明，未执行验证。', '近期心跳不是实时在线保证。', '调度只排队，由工作端领取并执行。']}
+
+
 def recommend(cfg, body):
     query = _text(body.get('query'), 'query', 2000).casefold()
     # Recommendation uses token/domain matches; catalog's literal query would prematurely exclude them.
@@ -365,69 +451,15 @@ def dispatch(cfg, body, actor='ui'):
 
 
 def _known_skill_roots():
-    home = Path.home()
-    return [('codex', home / '.codex/skills'), ('codex', home / '.agents/skills'),
-            ('zcode', home / '.zcode/skills'), ('workbuddy', home / '.workbuddy/skills'),
-            ('dsh', home / '.dsh/skills')]
+    return capability_discovery.known_skill_roots(codex_home=os.environ.get('CODEX_HOME'))
+
+
+def validate_source_settings(body):
+    return capability_discovery.validate_source_settings(body)
 
 
 def discover(cfg):
-    collaboration.root_path(cfg)
-    suggestions, skipped, examined = [], 0, 0
-    for tool, root in _known_skill_roots():
-        if not root.exists():
-            continue
-        try:
-            config._check_ancestors(str(root))
-        except (OSError, ValueError):
-            skipped += 1
-            continue
-        # Only direct skill packages, never session/history/config trees or arbitrary user paths.
-        with os.scandir(root) as entries:
-            for entry in entries:
-                examined += 1
-                if examined > 512:
-                    return {'suggestions': suggestions, 'skipped': skipped, 'truncated': True, 'published': False}
-                if entry.name.startswith('.'):
-                    continue
-                try:
-                    if config._is_reparse(entry.stat(follow_symlinks=False)) or not entry.is_dir(follow_symlinks=False):
-                        continue
-                    path = Path(entry.path) / 'SKILL.md'
-                    config._check_ancestors(str(path.parent))
-                    info = path.lstat()
-                    if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        skipped += 1
-                        continue
-                    # Read only bounded frontmatter lines, never execute or return instruction body.
-                    with path.open('r', encoding='utf-8-sig') as handle:
-                        opened = os.fstat(handle.fileno())
-                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or opened.st_nlink != 1:
-                            raise ValueError('Skill 文件身份改变。')
-                        if handle.readline(1025).strip() != '---':
-                            continue
-                        meta, total = {}, 0
-                        for _ in range(40):
-                            line = handle.readline(2049)
-                            total += len(line)
-                            if total > 8192 or len(line) > 2048:
-                                raise ValueError('frontmatter 超过限制。')
-                            if line.strip() == '---':
-                                break
-                            match = re.match(r'^(name|description):\s*(.*)$', line)
-                            if match:
-                                value = match.group(2).strip().strip('"\'')
-                                if value not in {'|', '>', '|-', '>-'}:
-                                    meta[match.group(1)] = _text(value, 'Skill 元数据', 160 if match.group(1) == 'name' else 2000, True)
-                        else:
-                            raise ValueError('frontmatter 未结束。')
-                    if meta.get('name'):
-                        suggestions.append(dict(meta, tool=tool, kind='skill', path=str(path),
-                                                source='local_frontmatter', declaration_status='discovered',
-                                                verification_status='unverified', published=False))
-                except (OSError, UnicodeError, ValueError):
-                    skipped += 1
-    return {'suggestions': suggestions, 'skipped': skipped, 'truncated': False, 'published': False}
+    return capability_discovery.discover(cfg, _known_skill_roots(), catalog_readonly)
 
 
 def execute(cfg, action, body, actor='ui'):
@@ -435,7 +467,6 @@ def execute(cfg, action, body, actor='ui'):
         raise ValueError('能力请求格式或来源无效。')
     if action not in ACTIONS:
         raise ValueError('不支持的能力操作。')
-    collaboration.root_path(cfg)
     expected = body.get('_workspace_root')
     if expected is not None and (not isinstance(expected, str) or config._key(expected) != config._key(cfg.get('ai_root', ''))):
         raise ValueError('工作环境已切换，请刷新。')
@@ -443,6 +474,7 @@ def execute(cfg, action, body, actor='ui'):
         if actor != 'ui':
             raise PermissionError('本机 Skill 发现仅供本地界面使用。')
         return discover(cfg)
+    collaboration.root_path(cfg)
     if action == 'capability_publish':
         return publish(cfg, body)
     if action == 'capability_list':

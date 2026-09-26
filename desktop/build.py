@@ -90,7 +90,7 @@ def main():
               "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
               "architecture": "x64", "subsystem": "Windows GUI", "sdk": SDK_VERSION,
               "sdk_sha256": SDK_SHA256, "contains_user_data": False,
-              "display_name": "曜核", "desktop_version": "2.12.0.0",
+              "display_name": "曜核", "desktop_version": "2.13.0.0",
               "icon_sha256": hashlib.sha256((ROOT / "frontend/brand.ico").read_bytes()).hexdigest()}
     output.with_suffix(".build.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))

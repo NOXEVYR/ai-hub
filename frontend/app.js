@@ -245,7 +245,7 @@
 
   // ---------- 路由 ----------
   const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
-    images: "出图图库", llm: "模型管理", files: "文件总览", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力与调度", workspace:"工作环境", collaboration:"协作与记忆", settings: "设置", organizer: "安全区整理" };
+    images: "出图图库", llm: "模型管理", files: "文件总览", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作环境", collaboration:"协作与记忆", settings: "设置", organizer: "安全区整理" };
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
     const [page, qs] = h.split("?");
@@ -262,7 +262,7 @@
     if (activePage === 'analysis') state = { type: value('an-type') || pages.analysis._type };
     if (activePage === 'workflows') state = { state: value('wf-state'), query: value('wf-query') };
     if (activePage === 'reports') state = AIHubWorkcenter.capture(view);
-    if (activePage === 'capabilities') state = AIHubCapabilities.capture(view);
+    if (activePage === 'capabilities') state = AIHubCapabilityLibrary.capture(view, AIHubCapabilities);
     if (activePage === 'files') state = { path: fileState.path, query: value('fs-q') };
     if (activePage === 'organizer') state = AIHubOrganizer.capture(view);
     if (activePage === 'projects') state = view?.dataset.wcView==='registry' ? {legacy:AIHubRegistry.capture(view.querySelector('#wc-project-content'))} : {};
@@ -351,7 +351,7 @@
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
   pages.projects=AIHubWorkcenter.createProjects({...registryEnv,legacyPage:AIHubRegistry.createProjects(registryEnv)});
-  pages.capabilities=AIHubCapabilities.createPage({api,heading});
+  pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities});
   pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs});
   pages.collaboration=AIHubCollaboration.createPage({api,heading});
 
@@ -368,7 +368,7 @@
     return `<div class="lc-overview-heading"><div><div class="eyebrow">YOUR LOCAL WORKSPACE</div><h2>工作总览</h2><p>资产、生成记录与协作，随时接续。</p></div><a class="lc-root" href="#/workspace" title="${esc(ov.ai_root || '配置工作环境')}">${icon('folder',16)}<span><small>当前工作区</small><b>${esc(ov.ai_root || '尚未配置')}</b></span>${icon('arrow',14)}</a></div>
     ${AIHubOrganizer.workspaceBanner(organizer)}
     <section class="metric-grid" aria-label="资产核心指标">${metric('中央主模型',(ov.central_counts.Checkpoint||0)+(ov.central_counts.Diffusion||0),'Checkpoint / Diffusion · 当前索引','layers')}${metric('中央 LoRA',ov.central_counts.LoRA||0,'架构、用途与训练信息','cpu')}${metric('出图记录',ov.image_count.toLocaleString(),`<em>${ov.image_with_meta}</em> 张含生成元数据`,'image')}${metric('文件占用',fmtSize(ov.unique_size),`扫描范围去重 · 可用 ${fmtSize(ov.disk.free)}`,'disk')}</section>
-    <nav class="lc-entry-grid" aria-label="常用工作入口">${entry('layers','浏览模型','查找模型与 LoRA','models')}${entry('image','打开图库','回看出图与生成参数','images')}${entry('workflow','能力与调度','匹配接口与工作端','capabilities')}${entry('document','项目与报告','按来源查阅工作成果','reports')}</nav>
+    <nav class="lc-entry-grid" aria-label="常用工作入口">${entry('layers','浏览模型','查找模型与 LoRA','models')}${entry('image','打开图库','回看出图与生成参数','images')}${entry('workflow','能力中心','Skill、接口与任务','capabilities')}${entry('document','项目与报告','按来源查阅工作成果','reports')}</nav>
     <div class="lc-dashboard-grid"><div class="lc-main-column">
     <section class="panel lc-recent"><div class="panel-head"><div><span class="lc-section-kicker">RECENT ASSETS</span><h3>最近修改的模型</h3></div><a href="#/models" class="link">查看全部 ${icon('arrow',13)}</a></div><div class="table-wrap"><table class="tbl recent-table"><thead><tr><th>模型 / 架构</th><th>类型</th><th>大小</th><th class="hide-small">文件修改</th></tr></thead><tbody>${recent.map(m=>`<tr><td><div class="file-label"><span class="type-icon">${icon('layers',15)}</span><div class="lc-model-copy"><button class="model-link" data-id="${m.rowid_pk}" title="${esc(m.filename)}">${esc(m.filename)}</button><span class="file-sub">${esc(m.classification?.architecture||m.family||'架构待确认')}</span></div></div></td><td>${typeBadge(m.classification?.model_role||m.mtype)}</td><td class="num">${fmtSize(m.size)}</td><td class="muted hide-small">${fmtDate(m.mtime)}</td></tr>`).join('')}</tbody></table>${recent.length?'':'<div class="lc-empty">尚无模型索引。配置工作环境后，点击「刷新索引」读取本地资产。</div>'}</div><div class="lc-panel-footer">${icon('folder',13)} 右键模型行可打开所在文件夹、复制路径或查看详情</div></section>
     <section class="panel purpose-launcher"><div class="panel-head"><div><span class="lc-section-kicker">EXPLORE BY PURPOSE</span><h3>按创作用途探索</h3></div><span class="caption-note">全部索引 · 含配套组件</span></div><div class="body"><div class="domain-grid">${functional.map(c=>`<button class="domain-card" data-nav="models" data-query="domain=${encodeURIComponent(c.id)}&scope=&kind=&view=all"><span class="domain-icon">${icon(c.icon,20)}</span><span class="domain-name">${esc(c.label)}</span><b>${c.count.toLocaleString()}</b></button>`).join('')}</div>${functional.length?'':'<p class="caption-note">模型入库后会在这里按用途显示。</p>'}</div></section>
@@ -388,7 +388,7 @@
     try{
       const [ov,mg,organizer]=await Promise.all([api('/api/overview'),api('/api/management'),api('/api/organizer/status')]);
       if(!el.isConnected)return;
-      el.innerHTML=renderOverview(ov,mg,organizer);
+      el.innerHTML=AIHubWorkspace.welcome(Boolean(ov.ai_root && ov.total_files)) + renderOverview(ov,mg,organizer);
       bindNavigation(el);bindModelLinks(el);
     }catch(e){failPage(el,e);}
   };
@@ -650,7 +650,7 @@
         const maxPage=Math.max(1,Math.ceil(d.total/d.size));if(imgState.page>maxPage){imgState.page=maxPage;return load();}
         $('#image-total',el).textContent=d.total.toLocaleString()+' 张图片';
         if(!dirsReady){const select=$('#im-dir',el);select.innerHTML='<option value="">所有出图目录</option>'+d.dirs.map(path=>`<option value="${esc(path)}">${esc(path)}</option>`).join('');select.value=imgState.dir;dirsReady=true;}
-        $('#image-grid',el).innerHTML=d.items.map((im,index)=>`<article class="gitem"><button class="g-preview" data-image="${index}" aria-label="查看 ${esc(im.name)}"><img src="${thumbURL(im.path)}" alt="${esc(im.name)}" loading="lazy"><span class="preview-hint">${icon('expand',15)} 查看大图</span>${im.width&&im.height?`<span class="image-resolution">${im.width} × ${im.height}</span>`:''}</button><div class="gitem-body"><div class="gitem-heading"><button class="gallery-filename" data-image="${index}" title="${esc(im.name)}">${esc(im.name)}</button><button class="gallery-delete" data-delete="${index}" title="移到回收站" aria-label="删除 ${esc(im.name)}">${icon('trash',15)}</button></div><div class="gitem-meta"><span>${im.engine==='comfyui'?'ComfyUI':im.engine==='a1111'?'Stable Diffusion':'本地图片'}</span><span>${fmtDate(im.mtime)} · ${fmtSize(im.size)}</span></div></div></article>`).join('');
+        $('#image-grid',el).innerHTML=d.items.map((im,index)=>`<article class="gitem" data-context-path="${esc(im.path)}" tabindex="0"><button class="g-preview" data-image="${index}" aria-label="查看 ${esc(im.name)}"><img src="${thumbURL(im.path)}" alt="${esc(im.name)}" loading="lazy"><span class="preview-hint">${icon('expand',15)} 查看大图</span>${im.width&&im.height?`<span class="image-resolution">${im.width} × ${im.height}</span>`:''}</button><div class="gitem-body"><div class="gitem-heading"><button class="gallery-filename" data-image="${index}" title="${esc(im.name)}">${esc(im.name)}</button><button class="gallery-delete" data-delete="${index}" title="移到回收站" aria-label="删除 ${esc(im.name)}">${icon('trash',15)}</button></div><div class="gitem-meta"><span>${im.engine==='comfyui'?'ComfyUI':im.engine==='a1111'?'Stable Diffusion':'本地图片'}</span><span>${fmtDate(im.mtime)} · ${fmtSize(im.size)}</span></div></div></article>`).join('');
         $('#images-empty',el).innerHTML=d.items.length?'':empty('当前没有匹配的图片','调整筛选条件，或刷新索引读取最新出图。');
         $('#images-pager',el).replaceChildren(pager(d.total,d.page,d.size,p=>{imgState.page=p;load();}));
         const afterDelete=()=>{if(el.isConnected){dirsReady=false;load();}};
@@ -748,9 +748,9 @@
       el.innerHTML=heading('工作流','查看模型依赖与路径记录，定位可用副本。','WORKFLOW LIBRARY')+`<div class="filterbar"><input id="wf-query" aria-label="搜索工作流" placeholder="搜索工作流名称或模型…"><select id="wf-state" aria-label="工作流状态"><option value="">所有状态 · ${d.items.length}</option>${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${state===value?'selected':''}>${label} · ${d.verification_counts?.[value]||0}</option>`).join('')}</select></div><p class="warning-note">验证结论按版本、日期和证据分别记录。仅路径检查与历史执行均不代表当前可运行。</p><section class="panel table-wrap"><table class="tbl"><thead><tr><th>工作流</th><th>验证状态 / 日期</th><th>证据与待核对</th><th>操作</th></tr></thead><tbody id="workflow-rows"></tbody></table><div id="workflow-empty"></div></section>`;
       const render=()=>{
         const filtered=d.items.filter(w=>(!state||verificationState(w)===state)&&(!query||JSON.stringify([w.name,w.missing,w.dependencies]).toLowerCase().includes(query)));
-        $('#workflow-rows',el).innerHTML=filtered.map(w=>`<tr><td class="workflow-name">${esc(w.name)}<span class="file-sub">${w.dependencies.length} 个模型引用</span></td><td>${AIHubRegistry.verificationBadge(verificationState(w))}<span class="file-sub">${esc(w.validation?.date||'无验证日期')}</span></td><td class="workflow-missing"><span class="file-sub">${esc(w.verification_reason||'暂无执行证据')}</span>${w.status==='reviewed_copy'?`${w.changes.length} 处路径修正 · ${w.copy_exists?'副本可访问':'副本当前不可访问'}`:esc(w.missing.join('；')||'记录中未发现缺失模型')}</td><td><button class="btn small" data-workflow="${esc(w.path)}">依赖详情</button></td></tr>`).join('');
+        $('#workflow-rows',el).innerHTML=filtered.map(w=>`<tr data-workflow="${esc(w.path)}" data-workflow-copy="${esc(w.copy||'')}" tabindex="0"><td class="workflow-name">${esc(w.name)}<span class="file-sub">${w.dependencies.length} 个模型引用</span></td><td>${AIHubRegistry.verificationBadge(verificationState(w))}<span class="file-sub">${esc(w.validation?.date||'无验证日期')}</span></td><td class="workflow-missing"><span class="file-sub">${esc(w.verification_reason||'暂无执行证据')}</span>${w.status==='reviewed_copy'?`${w.changes.length} 处路径修正 · ${w.copy_exists?'副本可访问':'副本当前不可访问'}`:esc(w.missing.join('；')||'记录中未发现缺失模型')}</td><td><button class="btn small" data-workflow="${esc(w.path)}" data-workflow-copy="${esc(w.copy||'')}">依赖详情</button></td></tr>`).join('');
         $('#workflow-empty',el).innerHTML=filtered.length?'':empty('没有匹配的工作流');
-        $$('[data-workflow]',el).forEach(b=>b.onclick=()=>{
+        $$('button[data-workflow]',el).forEach(b=>b.onclick=()=>{
           const w=d.items.find(x=>x.path===b.dataset.workflow);
           openModal(`<h2>${esc(w.name)}</h2><div class="warning-note">${d.coverage}</div><div class="kv"><div class="k">原稿</div><div class="pathline">${esc(w.path)}</div>${w.copy?`<div class="k">修正版</div><div class="pathline">${esc(w.copy)}</div>`:''}</div>${AIHubRegistry.verificationBadge(verificationState(w))}<p>${esc(w.verification_reason||'暂无执行证据')}</p><div class="copy-paths"><button class="btn small" id="workflow-register">登记验证证据</button><button class="btn small" id="copy-wf-original">复制原稿路径</button>${w.copy?'<button class="btn small primary" id="copy-wf-reviewed">复制修正版路径</button>':''}</div><div class="workflow-details">${w.dependencies.map(p=>`<div class="dependency"><span class="badge ${p.exists?'b-green':'b-yellow'}">${p.exists?'原路径有记录':'原路径需核对'}</span><div>${esc(p.name)}<span class="file-sub">${esc(p.type)}</span></div></div>`).join('')}</div>${w.changes.length?`<div class="intro"><h3>路径修正记录</h3>${w.changes.map(c=>`<p>${esc(c.from)}<br>→ ${esc(c.to)}</p>`).join('')}</div>`:''}`);
           $('#workflow-register').onclick=async()=>{try{const snapshot=await api('/api/registry');if(!el.isConnected)return;AIHubRegistry.editor(registryEnv,'workflow',(snapshot.workflows||[]).find(r=>r.path===w.path)||{path:w.path},snapshot,route);}catch(e){toast(e.message,'err');}};
@@ -843,7 +843,11 @@
   }
   bindBrandMotion(document);
   AIHubContextMenu.install({document, window, api, openDetails: openModelDrawer,
-    clipboard: navigator.clipboard, toast});
+    clipboard: navigator.clipboard, toast, navigation,
+    openWorkflowFolder: path => api('/api/context/reveal', {body:{kind:'workflow',path}}),
+    openSkillFolder: path => api('/api/context/reveal', {body:{kind:'skill',path}}),
+    openWorkcenterDocument: (id, root) => api('/api/workcenter/reveal', {body:{document_id:id,_workspace_root:root}}),
+    openPathFolder: path => api('/api/context/reveal', {body:{kind:'indexed',path}})});
   pollJobs();
   navigation.start();
 })();

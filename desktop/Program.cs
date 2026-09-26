@@ -17,8 +17,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.12.0.0")]
-[assembly: AssemblyFileVersion("2.12.0.0")]
+[assembly: AssemblyVersion("2.13.0.0")]
+[assembly: AssemblyFileVersion("2.13.0.0")]
 
 namespace AIHub.Desktop
 {
@@ -296,7 +296,7 @@ namespace AIHub.Desktop
                 var core = web.CoreWebView2;
                 core.Profile.PreferredColorScheme = CoreWebView2PreferredColorScheme.Dark;
                 core.Settings.IsStatusBarEnabled = false;
-                core.Settings.AreDefaultContextMenusEnabled = false;
+                core.Settings.AreDefaultContextMenusEnabled = true;
                 core.Settings.AreDevToolsEnabled = false;
                 core.Settings.AreHostObjectsAllowed = false;
                 core.Settings.IsWebMessageEnabled = true;

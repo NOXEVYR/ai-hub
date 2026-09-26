@@ -1016,6 +1016,53 @@ def workflow_summary(db, cfg, params, body):
     return _json_bytes(management.workflows(cfg))
 
 
+def context_reveal(db, cfg, params, body):
+    """Reveal an existing listed resource, never execute a user-supplied path."""
+    import stat
+    import subprocess
+    from . import capabilities
+    if not isinstance(body, dict) or set(body) != {'kind', 'path'}:
+        return _err('请选择列表中的文件。')
+    path, kind = body['path'], body['kind']
+    if not isinstance(path, str) or not path or not os.path.isabs(path) or '\x00' in path:
+        return _err('文件路径无效。')
+    if kind == 'workflow':
+        roots = [cfg.get('ai_root', '')] + list(cfg.get('scan_roots') or [])
+        if not any(isinstance(root, str) and os.path.isabs(root) and cfgmod._within(path, root) for root in roots):
+            return _err('该工作流位于当前工作区与登记来源之外。', 403)
+        items = management.workflows(cfg).get('items', [])
+        allowed = {p for item in items for p in (item.get('path'), item.get('copy')) if isinstance(p, str)}
+    elif kind == 'skill':
+        allowed = {item['path'] for item in capabilities.discover(cfg).get('suggestions', [])}
+    elif kind == 'indexed':
+        roots = [cfg.get('ai_root', '')] + list(cfg.get('scan_roots') or []) + list(cfg.get('output_roots') or [])
+        if not any(isinstance(root, str) and os.path.isabs(root) and cfgmod._within(path, root) for root in roots):
+            return _err('该路径位于当前登记来源之外。', 403)
+        known = any(isinstance(root, str) and root and cfgmod._key(root) == cfgmod._key(path) for root in roots)
+        if not known:
+            known = (db.one('SELECT path FROM files WHERE path=? OR parent=? LIMIT 1', (path,path))
+                or db.one('SELECT path FROM images WHERE path=? LIMIT 1', (path,))
+                or db.one('SELECT path FROM dirs WHERE path=? LIMIT 1', (path,)))
+        allowed = {path} if known else set()
+    else:
+        return _err('不支持的资源类型。', 400)
+    if path not in allowed:
+        return _err('该文件不在当前列表的可访问来源中，请刷新后重试。', 403)
+    try:
+        cfgmod._check_ancestors(os.path.dirname(path))
+        info = os.lstat(path)
+        is_directory = kind == 'indexed' and stat.S_ISDIR(info.st_mode)
+        if cfgmod._is_reparse(info) or not (stat.S_ISREG(info.st_mode) or is_directory):
+            return _err('只支持定位普通文件。', 403)
+        if os.name != 'nt':
+            return _err('当前系统暂不支持资源管理器定位，请复制路径。', 409)
+        executable = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'explorer.exe')
+        subprocess.Popen([executable, path] if is_directory else [executable, '/select,', path])
+    except (ValueError, OSError):
+        return _err('文件已移动、来源不可访问或资源管理器未能打开。', 409)
+    return _json_bytes({'ok': True})
+
+
 def registry_request(db, cfg, params, body):
     action = _q(params, "action")
     if not isinstance(body, dict):
@@ -1088,8 +1135,26 @@ def workcenter_request(db, cfg, params, body):
 def capabilities_request(db, cfg, params, body):
     from . import capabilities
     import copy
+    import hashlib
+    def source_revision(value):
+        return hashlib.sha256(json.dumps(value.get('capability_sources', []), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     action = _q(params, 'action')
     try:
+        if action == 'sources':
+            if not isinstance(body, dict) or set(body) != {'sources', 'revision', '_workspace_root'}:
+                return _err('发现来源请求格式无效。')
+            with organization.LOCK:
+                if not isinstance(body['_workspace_root'], str) or cfgmod._key(body['_workspace_root']) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                if body['revision'] != source_revision(cfg):
+                    return _err('发现来源已被修改，请刷新后再保存。', 409)
+                sources = capabilities.validate_source_settings({'sources': body['sources']})
+                updated = copy.deepcopy(cfg)
+                updated['capability_sources'] = sources
+                cfgmod.save_config(updated)
+                cfg.clear()
+                cfg.update(updated)
+                return _json_bytes({'saved': True, 'configured_sources': sources, 'sources_revision': source_revision(cfg), 'workspace_root': cfg.get('ai_root', '')})
         if action == 'dispatch':
             if not isinstance(body, dict):
                 return _err('能力调度请求必须是对象')
@@ -1107,6 +1172,8 @@ def capabilities_request(db, cfg, params, body):
                 return _err('能力请求必须是对象')
             result = capabilities.execute(snapshot, 'capability_' + action, payload, actor='ui')
             response_root = snapshot.get('ai_root', '')
+            if action == 'discover':
+                result = {**result, 'configured_sources': snapshot.get('capability_sources', []), 'sources_revision': source_revision(snapshot)}
         return _json_bytes({**result, 'workspace_root': response_root, 'root': response_root})
     except PermissionError as error:
         return _err(str(error), 403)
@@ -1159,8 +1226,9 @@ ROUTES = [
     ('POST', r'^/api/harnesses/(?P<action>save)$', harness_request),
     ('GET', r'^/api/workcenter/(?P<action>documents|projects|document)$', workcenter_request),
     ('POST', r'^/api/workcenter/(?P<action>classify|reveal)$', workcenter_request),
+    ('POST', r'^/api/context/reveal$', context_reveal),
     ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
-    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch)$', capabilities_request),
+    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch|sources)$', capabilities_request),
     ("GET", r"^/api/workspace/status$", workspace_environment_status),
     ("POST", r"^/api/workspace/(?P<action>preview|apply)$", workspace_environment_action),
     ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
@@ -1172,7 +1240,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.12.0", "desktop_shell_version": "2.12.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.0", "desktop_shell_version": "2.13.0", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),

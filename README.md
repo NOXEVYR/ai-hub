@@ -1,6 +1,6 @@
 # 曜核
 
-**本地 AI 资产与协作工作台，原名 AI Hub。** 2.12.0 增加独立的软件更新入口、手动下载并重启安装，以及可选的自动下载、退出安装。保留金色眼形启动动效、工作端发现和全部资产管理功能。主程序、MCP 和桌面壳为 2.12.0。[软件更新说明](docs/SOFTWARE_UPDATES.md) · [本次更新](docs/RELEASE_2.12.0.md) · [工作端管理](docs/HARNESSES_2.10.md)。
+**本地 AI 资产与协作工作台，原名 AI Hub。** 2.13.0 新增按用途与工作端分类的能力中心，扩展本机 Skill / 插件接口发现，支持自定义来源，完善右键菜单和首次工作区引导。保留 2.12 的自动与手动更新。[本次更新](docs/RELEASE_2.13.0.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。
 
 本候选版同时包含 2.7 引入的协作任务、统一报告与产物路径、需审核的共享记忆、MCP stdio 接口和受保护的临时文件回收。见 [协作说明](docs/COLLABORATION_2.7.md) 与 [工具接入](docs/MCP_2.7.md)。[2.11 工作端发现](docs/RELEASE_2.11.md)记录本机发现和可选模板改进；[2.10 更新与验收说明](docs/RELEASE_2.10.md)列出交付范围与待完成事项；[2.9 更新记录](docs/RELEASE_2.9.md)保留历史。
 
@@ -42,7 +42,7 @@ Windows 桌面包继续使用兼容文件名 `AI Hub.exe`，包含完整程序�
 
 首次使用：进入 **工作环境**，选择“新建工作环境”或“接入已有目录”，填写自己的根目录。先预览将创建的目录与规则，确认后保存，再开始索引。资产扫描来源和图库来源分开配置；可发现训练验证目录 `verify_out / samples`，数据集与缓存不进入图库。已有结构和 AGENTS.md 保留。需要分类入口时再使用 **安全区整理**。[工作区说明](docs/WORKSPACE_2.6.md)。
 
-当前 **2.12.0 候选包**：[Windows 桌面包](releases/AI-Hub-v2.12.0-Windows-x64.zip) · [源码包](releases/AI-Hub-v2.12.0-Source.zip) · [SHA-256](releases/AI-Hub-v2.12.0-SHA256.txt) · [更新 PR](https://github.com/NOXEVYR/ai-hub/pull/1)。候选包不替换历史版本；提供下载不表示每台电脑已安装或每个第三方接口均已接通。
+当前 **2.13.0 候选包**：[Windows 桌面包](releases/AI-Hub-v2.13.0-Windows-x64.zip) · [源码包](releases/AI-Hub-v2.13.0-Source.zip) · [SHA-256](releases/AI-Hub-v2.13.0-SHA256.txt) · [更新 PR](https://github.com/NOXEVYR/ai-hub/pull/1)。候选包不替换历史版本；提供下载不表示每台电脑已安装或每个第三方接口均已接通。
 
 历史 **2.11.2 候选包**：[Windows 桌面包](releases/AI-Hub-v2.11.2-Windows-x64.zip) · [源码包](releases/AI-Hub-v2.11.2-Source.zip) · [SHA-256](releases/AI-Hub-v2.11.2-SHA256.txt)。
 

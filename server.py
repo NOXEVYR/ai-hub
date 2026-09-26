@@ -35,7 +35,7 @@ CFG = {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIHub/2.12.0"
+    server_version = "AIHub/2.13.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -208,7 +208,7 @@ def cmd_serve(args):
     url = f"http://127.0.0.1:{port}"
     control = service_control.ServiceControl(cfgmod.APP_DIR, cfgmod.DATA_DIR, port)
     httpd.service_control = control
-    update_manager = app_update.UpdateManager(cfgmod.APP_DIR, "2.12.0", gate=control.gate)
+    update_manager = app_update.UpdateManager(cfgmod.APP_DIR, "2.13.0", gate=control.gate)
     httpd.app_update = update_manager
     from aihub import collaboration_maintenance
     maintenance_worker = None
