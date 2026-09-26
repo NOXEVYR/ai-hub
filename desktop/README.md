@@ -14,6 +14,10 @@
 - 后台仍在处理任务或状态无法确认时，保留托盘并提示稍后重试；不强制结束扫描、其他应用或任意 PID。旧版后台不支持安全退出协议时，需先结束旧版后台再启动新版。
 - Windows 注销或关机不会被托盘隐藏行为阻止。
 
+2.11.2 在窗口出现后、服务和工作台页面真实就绪前，只显示原生金色眼形图标的轻微呼吸与眼内短拖影，不显示“正在打开/正在加载”文字。页面导航完成后立即移除图标，不设置最短展示时间，不等待动效播放完毕，也不增加开场页面。启动失败仍显示原错误说明和重试入口。
+
+动画使用已有嵌入图标，33 ms 定时器只重绘图标区域；窗口隐藏、最小化、开始退出或加载完成时停止。恢复窗口只在尚未完成加载时继续，正常工作台不会重播。Windows 动画效果关闭或偏好无法读取时显示静态图标；设置变化立即生效。控件释放时停表、解除 Tick 事件并释放图像资源。
+
 后台端口沿用 `data/config.json`，只连接 `127.0.0.1`。网页来源链接交给默认浏览器；桌面窗口只加载本地工作台。不添加开机启动。
 
 主机需要 Python 3.9+、.NET Framework 4.8+、Microsoft Edge WebView2 Runtime。EXE 包含 WebView2 Core、WinForms 与 x64 Loader 三个 SDK 组件，首次启动在程序的 data/desktop 目录释放经摘要校验的 Loader。它不包含 Python、本机模型和资产数据库；请保留整个程序目录与 Python 安装。
@@ -32,7 +36,7 @@ python -B desktop/build.py --sdk-package "下载目录/microsoft.web.webview2.1.
 
 SDK 版本：`1.0.4191.47`。官方 nupkg：9,259,926 字节（8.83 MiB）。SHA-256：`f492bbf547d0da329553b6727435b677579b1e9f91cc9e4a1ad029366d5f23d0`。
 
-构建参数为 `target:winexe`、`platform:x64`，程序集版本 `2.11.0.0`，包含图标与 asInvoker / PerMonitorV2 清单。测试覆盖配置、端口边界、URL 来源、Windows 参数转义、服务身份、带身份校验的退出请求、忙碌拒绝、启动回执、晚启动进程退出、PID 重用隔离、真实 Python 冷启动与无控制台进程。冷启动只使用独立临时夹与自退测试服务，不重启用户服务。真实任务栏显示、右键菜单、双击恢复及系统注销仍需在 Windows 桌面验收；合成测试不代替实际界面验收。
+构建参数为 `target:winexe`、`platform:x64`，程序集版本 `2.11.2.0`，包含图标与 asInvoker / PerMonitorV2 清单。测试覆盖配置、端口边界、URL 来源、Windows 参数转义、服务身份、带身份校验的退出请求、忙碌拒绝、启动回执、晚启动进程退出、PID 重用隔离、真实 Python 冷启动与无控制台进程。冷启动只使用独立临时夹与自退测试服务，不重启用户服务。另有原生加载控件的无窗口生命周期与离屏图标绘制检查，覆盖隐藏、最小化、减少动画、完成、重试与资源释放。真实加载动画观感、任务栏显示、右键菜单、双击恢复及系统注销仍需在 Windows 桌面验收；合成测试不代替实际界面验收。
 
 安装新版前从托盘选择“退出曜核（含后台）”，确认退出后备份旧 EXE、快捷方式和源码；关闭窗口本身不会解除托盘进程的 EXE 占用。本次托盘更新需要同时更新桌面程序和后台服务。只复制程序文件，不覆盖 `data`。主服务/前端测试仍按项目 AGENTS.md 执行。
 
@@ -44,6 +48,8 @@ SDK 版本：`1.0.4191.47`。官方 nupkg：9,259,926 字节（8.83 MiB）。SHA
 - [WebView2 WinForms 指南](https://learn.microsoft.com/en-us/microsoft-edge/webview2/get-started/winforms)
 - [WebView2 分发说明](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)
 - [WebView2 安全实践](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security)
+- [Windows 客户区动画偏好](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation)
+- [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange)
 
 SDK 许可全文见 `WebView2-LICENSE.txt`，同时嵌入 EXE。
 

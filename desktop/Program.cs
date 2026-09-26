@@ -16,8 +16,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.11.0.0")]
-[assembly: AssemblyFileVersion("2.11.0.0")]
+[assembly: AssemblyVersion("2.11.2.0")]
+[assembly: AssemblyFileVersion("2.11.2.0")]
 
 namespace AIHub.Desktop
 {
@@ -129,7 +129,8 @@ namespace AIHub.Desktop
     internal sealed class HubWindow : Form
     {
         private WebView2 web;
-        private readonly Label loading;
+        private readonly Label failure;
+        private readonly StartupAnimation startupAnimation;
         private readonly RegisteredWaitHandle activation;
         private readonly CancellationTokenSource closing = new CancellationTokenSource();
         private readonly NotifyIcon tray;
@@ -138,6 +139,7 @@ namespace AIHub.Desktop
         private readonly ToolStripMenuItem exitItem;
         private Task<string> serviceStartup;
         private bool initializing;
+        private bool initializationInterrupted;
         private bool exiting;
         private bool exitApproved;
         private bool resourcesReleased;
@@ -168,9 +170,14 @@ namespace AIHub.Desktop
             trayMenu.Items.Add(exitItem);
             tray = new NotifyIcon { Icon = Icon, Text = "曜核 · 本地 AI 工作台", ContextMenuStrip = trayMenu, Visible = true };
             tray.DoubleClick += delegate { BringToUser(); };
-            loading = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
-                Text = "曜核\n\n正在打开本地工作空间…", Font = new Font("Microsoft YaHei UI", 15F) };
-            Controls.Add(loading);
+            failure = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+                Visible = false, Font = new Font("Microsoft YaHei UI", 15F) };
+            Controls.Add(failure);
+            using (var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("brand.ico"))
+                startupAnimation = new StartupAnimation(source) { Dock = DockStyle.Fill };
+            Controls.Add(startupAnimation);
+            startupAnimation.BeginLoading();
+            startupAnimation.BringToFront();
             RestoreWindow();
             activation = ThreadPool.RegisterWaitForSingleObject(Program.ActivateEvent, delegate
             {
@@ -193,6 +200,39 @@ namespace AIHub.Desktop
             catch (DllNotFoundException) { }
         }
 
+        private void SyncStartupVisibility()
+        {
+            if (startupAnimation != null)
+                startupAnimation.SetHostActive(Visible && WindowState != FormWindowState.Minimized && !exiting && !resourcesReleased);
+        }
+
+        private bool StartupInterruptedByExit()
+        {
+            if (!exiting && !closing.IsCancellationRequested) return false;
+            startupAnimation.Complete();
+            if (exiting && !closing.IsCancellationRequested) initializationInterrupted = true;
+            return true;
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            SyncStartupVisibility();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            SyncStartupVisibility();
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            base.WndProc(ref message);
+            if (message.Msg == 0x001A && startupAnimation != null)
+                startupAnimation.RefreshMotionPreference();
+        }
+
         private void BringToUser()
         {
             if (IsDisposed || closing.IsCancellationRequested) return;
@@ -206,27 +246,29 @@ namespace AIHub.Desktop
         {
             if (initializing || exiting || closing.IsCancellationRequested) return;
             initializing = true;
+            initializationInterrupted = false;
             retryItem.Enabled = false;
             loaded = false;
             try
             {
                 if (web != null) { web.Dispose(); web = null; }
-                loading.Visible = true;
-                loading.Text = "曜核\n\n正在打开本地工作空间…";
-                loading.BringToFront();
+                failure.Visible = false;
+                startupAnimation.BeginLoading();
+                SyncStartupVisibility();
+                startupAnimation.BringToFront();
                 serviceStartup = Task.Run(() => Hub.EnsureService());
                 string status = await serviceStartup;
-                if (exiting || closing.IsCancellationRequested) return;
+                if (StartupInterruptedByExit()) return;
                 Hub.Log("service_" + status + " port=" + Hub.Port);
-                loading.Text = "曜核\n\n正在加载工作台…";
                 web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
                 Controls.Add(web);
+                startupAnimation.BringToFront();
                 var options = new CoreWebView2EnvironmentOptions();
                 options.Language = "zh-CN";
                 var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Hub.Cache, "WebView2"), options);
-                if (exiting || closing.IsCancellationRequested) return;
+                if (StartupInterruptedByExit()) return;
                 await web.EnsureCoreWebView2Async(environment);
-                if (exiting || closing.IsCancellationRequested) return;
+                if (StartupInterruptedByExit()) return;
                 var core = web.CoreWebView2;
                 core.Profile.PreferredColorScheme = CoreWebView2PreferredColorScheme.Dark;
                 core.Settings.IsStatusBarEnabled = false;
@@ -264,14 +306,15 @@ namespace AIHub.Desktop
                 };
                 core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
                 {
-                    if (exiting || closing.IsCancellationRequested) return;
+                    if (StartupInterruptedByExit()) return;
                     if (!e.IsSuccess)
                     {
                         if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
                             ShowFailure("工作台页面加载失败，请从托盘菜单重试。错误：" + e.WebErrorStatus);
                         return;
                     }
-                    loading.Visible = false;
+                    startupAnimation.Complete();
+                    failure.Visible = false;
                     web.BringToFront();
                     if (!loaded)
                     {
@@ -284,7 +327,7 @@ namespace AIHub.Desktop
             }
             catch (Exception e)
             {
-                if (exiting || closing.IsCancellationRequested) return;
+                if (StartupInterruptedByExit()) return;
                 Hub.Log("window_error " + e.GetType().Name + ": " + e.Message);
                 ShowFailure(e is WebView2RuntimeNotFoundException ?
                     "未找到 Microsoft Edge WebView2 运行环境。请安装微软官方 WebView2 Runtime 后再打开。" : e.Message);
@@ -299,9 +342,10 @@ namespace AIHub.Desktop
         private void ShowFailure(string message)
         {
             if (web != null) web.Visible = false;
-            loading.Visible = true;
-            loading.Text = "曜核\n\n工作台未能打开\n\n请右键任务栏托盘中的曜核图标，重试打开工作台或退出。";
-            loading.BringToFront();
+            startupAnimation.Complete();
+            failure.Visible = true;
+            failure.Text = "曜核\n\n工作台未能打开\n\n请右键任务栏托盘中的曜核图标，重试打开工作台或退出。";
+            failure.BringToFront();
             retryItem.Enabled = !exiting;
             if (Visible) MessageBox.Show(this, message, "曜核 · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
             else tray.ShowBalloonTip(5000, "曜核 · 启动提示", message, ToolTipIcon.Error);
@@ -311,6 +355,7 @@ namespace AIHub.Desktop
         {
             if (exiting || closing.IsCancellationRequested) return;
             exiting = true;
+            SyncStartupVisibility();
             retryItem.Enabled = false;
             exitItem.Enabled = false;
             tray.Text = "曜核 · 正在退出后台…";
@@ -344,6 +389,17 @@ namespace AIHub.Desktop
                 if (!closing.IsCancellationRequested)
                 {
                     exiting = false;
+                    if (initializationInterrupted)
+                    {
+                        initializationInterrupted = false;
+                        loaded = false;
+                        startupAnimation.Complete();
+                        if (web != null) web.Visible = false;
+                        failure.Text = "曜核\n\n启动已中断\n\n后台尚未退出，请右键托盘中的曜核图标，选择重试打开工作台。";
+                        failure.Visible = true;
+                        failure.BringToFront();
+                    }
+                    SyncStartupVisibility();
                     exitItem.Enabled = true;
                     retryItem.Enabled = !initializing;
                     tray.Text = "曜核 · 本地 AI 工作台";
@@ -423,6 +479,7 @@ namespace AIHub.Desktop
             if (resourcesReleased) return;
             resourcesReleased = true;
             closing.Cancel();
+            if (startupAnimation != null) startupAnimation.Dispose();
             if (activation != null) activation.Unregister(null);
             if (tray != null) { tray.Visible = false; tray.Dispose(); }
             if (trayMenu != null) trayMenu.Dispose();

@@ -17,6 +17,7 @@ namespace AIHub.Desktop
             Console.WriteLine("PASS " + label);
         }
 
+        [STAThread]
         private static int Main(string[] args)
         {
             try { return Run(args); }
@@ -29,6 +30,7 @@ namespace AIHub.Desktop
 
         private static int Run(string[] args)
         {
+            CheckStartupControl(args[0]);
             byte[] ico = File.ReadAllBytes(args[0]);
             int[] sizes = { 16, 20, 24, 32, 48, 64, 128, 256 };
             Check(BitConverter.ToUInt16(ico, 2) == 1 && BitConverter.ToUInt16(ico, 4) == sizes.Length, "eight ICO frames");
@@ -67,9 +69,9 @@ namespace AIHub.Desktop
             int pe = BitConverter.ToInt32(exe, 60);
             Check(BitConverter.ToUInt16(exe, pe + 4) == 0x8664 && BitConverter.ToUInt16(exe, pe + 24 + 68) == 2,
                 "PE x64 Windows GUI");
-            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.11.0.0", "assembly version 2.11.0.0");
+            Check(AssemblyName.GetAssemblyName(args[1]).Version.ToString() == "2.11.2.0", "assembly version 2.11.2.0");
             var version = FileVersionInfo.GetVersionInfo(args[1]);
-            Check(version.FileVersion == "2.11.0.0" && version.ProductName == "曜核", "EXE version and product display name");
+            Check(version.FileVersion == "2.11.2.0" && version.ProductName == "曜核", "EXE version and product display name");
             using (var embedded = Assembly.LoadFile(Path.GetFullPath(args[1])).GetManifestResourceStream("brand.ico"))
             using (var memory = new MemoryStream())
             {
@@ -108,6 +110,69 @@ namespace AIHub.Desktop
             finally { FreeLibrary(module); }
             Console.WriteLine("Icon/PE tests passed: " + passed);
             return 0;
+        }
+
+        private static void CheckStartupControl(string iconFile)
+        {
+            bool allowMotion = true;
+            using (var source = File.OpenRead(iconFile))
+            using (var animation = new StartupAnimation(source, delegate { return allowMotion; }))
+            {
+                animation.Size = new Size(360, 280);
+                animation.CreateControl();
+                Check(!animation.IsAnimating && !animation.IsLoading, "startup control begins idle without a visible window");
+                animation.BeginLoading();
+                Check(animation.IsLoading && !animation.IsAnimating, "startup waits for active host before running timer");
+                animation.SetHostActive(true);
+                Check(animation.IsAnimating && animation.Text == "" && !animation.TabStop, "active loading animates without loading text or focus");
+                animation.Visible = false;
+                Check(!animation.IsAnimating, "hidden startup control stops timer");
+                animation.Visible = true;
+                Check(animation.IsAnimating, "still-loading visible control resumes timer");
+                animation.SetHostActive(false);
+                Check(!animation.IsAnimating, "inactive or minimized host stops timer");
+                animation.SetHostActive(true);
+                Check(animation.IsAnimating, "loading host restore resumes timer");
+                allowMotion = false;
+                animation.RefreshMotionPreference();
+                Check(!animation.IsAnimating && animation.Visible, "reduced motion keeps a static icon with no timer");
+                using (var bitmap = new Bitmap(360, 280))
+                {
+                    animation.DrawToBitmap(bitmap, new Rectangle(0, 0, 360, 280));
+                    bool gold = false;
+                    for (int y = 70; y < 210 && !gold; y += 4)
+                        for (int x = 100; x < 260 && !gold; x += 4)
+                        {
+                            Color pixel = bitmap.GetPixel(x, y);
+                            gold = pixel.R > 150 && pixel.R > pixel.B + 40;
+                        }
+                    Check(gold, "static startup renders the embedded-style golden eye offscreen");
+                }
+                allowMotion = true;
+                animation.RefreshMotionPreference();
+                Check(animation.IsAnimating, "live motion preference change resumes only pending loading");
+                var completion = Stopwatch.StartNew();
+                animation.Complete();
+                completion.Stop();
+                Check(!animation.IsAnimating && !animation.IsLoading && !animation.Visible && completion.ElapsedMilliseconds < 250,
+                    "navigation completion immediately stops and hides startup without a minimum duration");
+                animation.SetHostActive(false);
+                animation.SetHostActive(true);
+                Check(!animation.IsAnimating && !animation.Visible, "restoring completed workbench never replays startup");
+                animation.BeginLoading();
+                Check(animation.IsAnimating, "explicit retry starts a new real loading interval");
+                animation.Dispose();
+                Check(animation.ResourcesReleased && !animation.IsAnimating && !animation.IsLoading,
+                    "dispose releases startup timer and drawing resources");
+            }
+            using (var source = File.OpenRead(iconFile))
+            using (var animation = new StartupAnimation(source, delegate { throw new InvalidOperationException("preference unavailable"); }))
+            {
+                animation.CreateControl();
+                animation.SetHostActive(true);
+                animation.BeginLoading();
+                Check(!animation.IsAnimating && animation.Visible, "unavailable Windows motion preference fails to static icon");
+            }
         }
 
         private delegate bool ResourceNameCallback(IntPtr module, IntPtr type, IntPtr name, IntPtr parameter);
