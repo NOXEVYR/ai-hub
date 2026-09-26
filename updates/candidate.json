@@ -1,0 +1,13 @@
+{
+  "schema": "ai-hub-update-v1",
+  "app": "ai-hub",
+  "channel": "candidate",
+  "version": "2.12.0",
+  "commit": "0f49035cbf4e174872c116ec234dd8135a9931c9",
+  "package": {
+    "bytes": 1371224,
+    "sha256": "8c3abd04cf9a39b27bd990ad4cefc2941807a42afed0d19c9c069f697fe924f5"
+  },
+  "notes": "全新曜核更新窗口，支持手动下载并重启安装、可选退出安装；加强启动交接、故障回退与版本检查。",
+  "min_updater_version": "2.12.0"
+}
