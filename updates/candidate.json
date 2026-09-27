@@ -2,13 +2,12 @@
   "schema": "ai-hub-update-v1",
   "app": "ai-hub",
   "channel": "candidate",
-  "version": "2.13.0",
-  "commit": "6e51ff359b41391b7a4ce450eea7d049637053e3",
+  "version": "2.13.1",
+  "commit": "5b35744c3657077c7aaf257297816cfd3fbeaa3b",
   "package": {
-    "bytes": 1409739,
-    "sha256": "0525c6e032185b8fff9a1c5fb7a2335be4abf7e7fe81619b5be94226f9f74660"
+    "bytes": 1414321,
+    "sha256": "4e5993ecc11d904892aec820b174bc53795e2bbf5e12f4b348c91e42ddf52799"
   },
-  "notes": "新增能力中心：按用途与工作端筛选 Skill、接口与环境状态，支持自定义来源；完善右键目录操作和新电脑工作区引导。发现不等于接口已接通。",
+  "notes": "修复已识别 VAE/编码器等配套模型的用途分类：名称建议明确待核验，未知用途不再默认通用组件；保留人工分类并完善新工作区规则。含能力中心、右键操作和软件更新。",
   "min_updater_version": "2.12.0"
 }
-
