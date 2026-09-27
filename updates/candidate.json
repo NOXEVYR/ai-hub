@@ -2,12 +2,12 @@
   "schema": "ai-hub-update-v1",
   "app": "ai-hub",
   "channel": "candidate",
-  "version": "2.13.1",
-  "commit": "5b35744c3657077c7aaf257297816cfd3fbeaa3b",
+  "version": "2.13.2",
+  "commit": "2ff98cd194540497ec90152592fe90d2241da34e",
   "package": {
-    "bytes": 1414321,
-    "sha256": "4e5993ecc11d904892aec820b174bc53795e2bbf5e12f4b348c91e42ddf52799"
+    "bytes": 1415161,
+    "sha256": "988a4447efbc537fb266d17bfc48e3f4274361916cb2e76980b8da7a60b56627"
   },
-  "notes": "修复已识别 VAE/编码器等配套模型的用途分类：名称建议明确待核验，未知用途不再默认通用组件；保留人工分类并完善新工作区规则。含能力中心、右键操作和软件更新。",
+  "notes": "曜核是 AI Hub 的改名升级。2.13.2 修复配套模型用途分类及更新器版本一致性；保留能力中心、右键菜单、工作区引导和人工标签。旧版仅作历史存档，请使用新版。",
   "min_updater_version": "2.12.0"
 }
