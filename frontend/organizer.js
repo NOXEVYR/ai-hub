@@ -27,7 +27,7 @@
   function workspaceBanner(status) {
     const workspace = status?.workspace || {};
     if (workspace.configured && workspace.available) return '';
-    return `<section class="setup-banner organizer-welcome ${workspace.configured ? 'is-unavailable' : ''}" role="status"><div><div class="eyebrow">${workspace.configured ? 'WORKSPACE OFFLINE' : 'MAKE IT YOUR WORKSPACE'}</div><h3>${workspace.configured ? '资产目录暂时不可访问' : '让 AI Hub 适应这台电脑'}</h3><p>${esc(workspace.message || (workspace.configured ? '检查硬盘连接，或重新选择安全区。已有记录会保留。' : '选择你自己的资产文件夹。模型、素材与工作流会按本机路径建立分类入口。'))}</p></div><a class="btn primary" href="#/organizer">${workspace.configured ? '检查安全区' : '设置安全区'} <span aria-hidden="true">→</span></a></section>`;
+    return `<section class="setup-banner organizer-welcome ${workspace.configured ? 'is-unavailable' : ''}" role="status"><div><div class="eyebrow">${workspace.configured ? 'WORKSPACE OFFLINE' : 'MAKE IT YOUR WORKSPACE'}</div><h3>${workspace.configured ? '资产目录暂时不可访问' : '让曜核适应这台电脑'}</h3><p>${esc(workspace.message || (workspace.configured ? '检查硬盘连接，或重新选择安全区。已有记录会保留。' : '选择你自己的资产文件夹。模型、素材与工作流会按本机路径建立分类入口。'))}</p></div><a class="btn primary" href="#/organizer">${workspace.configured ? '检查安全区' : '设置安全区'} <span aria-hidden="true">→</span></a></section>`;
   }
 
   function planTable(plan, category = '', page = 1) {

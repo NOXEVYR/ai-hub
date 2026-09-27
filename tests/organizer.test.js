@@ -17,7 +17,7 @@ test('classification labels translate storage categories without changing target
 test('first-run and disconnected workspaces have an internal setup link and escaped messages', () => {
   const fresh = organizer.workspaceBanner({workspace:{configured:false,message:'<script>unsafe</script>'}});
   assert.match(fresh, /href="#\/organizer"/);
-  assert.match(fresh, /让 AI Hub 适应这台电脑/);
+  assert.match(fresh, /让曜核适应这台电脑/);
   assert.match(fresh, /&lt;script&gt;/);
   assert.doesNotMatch(fresh, /<script>/);
   assert.match(organizer.workspaceBanner({workspace:{configured:true,available:false}}), /资产目录暂时不可访问/);

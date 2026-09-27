@@ -1,0 +1,2 @@
+59349312998dc8bc4dc5b06ded379b53863f70d804b847b50de2e7e0df3fcb91  AI-Hub-v2.11.3-Source.zip
+d9c3e5fa0da8c1da37f5359a4103145cde7adac8beb7f30928c5d341244d3d45  AI-Hub-v2.11.3-Windows-x64.zip

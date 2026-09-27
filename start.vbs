@@ -12,7 +12,7 @@ ElseIf RuntimeWorks("python") Then
     runtime = "python"
 End If
 If runtime = "" Then
-    MsgBox "Python 3.9 or later could not be found. Please use debug.bat to inspect the environment.", 16, "AI Hub"
+    MsgBox "Python 3.9 or later could not be found. Please use debug.bat to inspect the environment.", 16, ChrW(&H66DC) & ChrW(&H6838)
     WScript.Quit 1
 End If
 If WScript.Arguments.Count > 0 Then

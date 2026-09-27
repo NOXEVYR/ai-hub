@@ -82,3 +82,13 @@ test('Classification evidence does not render metadata as HTML', () => {
   assert(html.includes('&lt;script&gt;unsafe&lt;/script&gt;'));
   assert(!html.includes('<script>'));
 });
+
+test('Classification suggestions distinguish missing evidence and filename hints', () => {
+  const render = values => helpers().classificationSummary({purpose_labels:[], ...values});
+  assert(render({domain:'unknown',domain_label:'用途待确认',domain_source:'unknown'}).includes('证据不足 · 待确认'));
+  const hint=render({domain:'image',domain_label:'图片创作',domain_source:'filename',domain_evidence:'<img src=x>'});
+  assert(hint.includes('按名称建议 · 待核验'));
+  assert(hint.includes('&lt;img src=x&gt;'));
+  assert(!hint.includes('<img'));
+  assert(render({domain_source:'manual'}).includes('已手动分类'));
+});

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from aihub import config, projects, tool_adapters, workspace
+from aihub import harnesses, config, projects, tool_adapters, workspace
 
 
 class ProjectCreation(unittest.TestCase):
@@ -26,6 +26,9 @@ class ProjectCreation(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.cfg = {'workspace_managed': True, 'ai_root': str(self.root), 'output_roots': [],
                     'network': {'synthetic': 'keep'}, 'notes': 'preserve'}
+        # This fixture explicitly opts into the four compatibility recipes.
+        for identifier in harnesses.BUILTIN_IDS:
+            harnesses.save(self.cfg, {'id': identifier, 'revision': 0, 'connection_mode': 'mcp_stdio'})
         config.save_config(self.cfg)
         projects._previews.clear()
         self.body = {'name': '示例项目', 'tools': ['codex', 'zcode', 'dsh', 'workbuddy']}

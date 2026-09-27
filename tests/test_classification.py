@@ -7,16 +7,77 @@ from test_aihub import Fixture
 
 
 class Classifier(Fixture):
-    def test_domains_distinguish_media_and_shared_qwen_encoder(self):
+    def test_domains_distinguish_media_and_unconfirmed_qwen_encoder(self):
         cases = [("LoRA", "anima", "image"), ("LoRA", "sdxl_base_v1-0", "image"),
                  ("LoRA", "Wan", "video"), ("Diffusion", "MiniMaxH3", "video"),
                  ("Diffusion", "MiniMaxMusic3", "audio"), ("LLM", "Qwen", "language"),
-                 ("TextEncoder", "Qwen", "shared"), ("LoRA", "QwenImage", "image"),
+                 ("TextEncoder", "Qwen", "unknown"), ("LoRA", "QwenImage", "image"),
                  ("Vision", "SAM", "vision"), ("VideoAI", "Topaz", "video")]
         for kind, family, expected in cases:
             with self.subTest(kind=kind, family=family):
                 result = c.classify({"mtype": kind, "family": family})
                 self.assertEqual(result["domain"], expected)
+
+    def test_component_filename_suggestions_do_not_certify_architecture(self):
+        cases = [("minimax_h3_audio_vae_fp32.safetensors", "VAE", "audio"),
+                 ("minimax_h3_video_vae_fp16.safetensors", "VAE", "video"),
+                 ("qwen_image_vae.safetensors", "VAE", "image"),
+                 ("SDXL-VAE-fp16.safetensors", "VAE", "image"),
+                 ("wan2.1_vae.safetensors", "VAE", "video"),
+                 ("stable_audio_vae.safetensors", "VAE", "audio"),
+                 ("qwen_image_text_encoder.safetensors", "TextEncoder", "image"),
+                 ("video_embedding.safetensors", "Embedding", "video")]
+        for name, role, domain in cases:
+            with self.subTest(name=name):
+                result = c.classify({"mtype": role, "family": "unknown", "filename": name})
+                self.assertEqual((result["domain"], result["domain_source"]), (domain, "filename"))
+                self.assertIn("文件名", result["domain_evidence"])
+                self.assertEqual((result["architecture"], result["architecture_source"]), ("未确认", "unknown"))
+                self.assertEqual(result["model_role"], role)
+                self.assertTrue(result["classification_pending"])
+
+    def test_component_names_require_specific_unambiguous_evidence(self):
+        names = ["vae.safetensors", "audio_visual_vae.safetensors", "audiovisual_vae.safetensors",
+                 "videographer_vae.safetensors", "imageboard_vae.safetensors", "fluxurious_vae.safetensors",
+                 "audio_vae_video.safetensors", "image_vae_video_vae.safetensors",
+                 r"C:\video\vae.safetensors", "audio_vaeish.safetensors"]
+        for name in names:
+            with self.subTest(name=name):
+                result = c.classify({"mtype": "VAE", "filename": name})
+                self.assertEqual((result["domain"], result["domain_source"]), ("unknown", "unknown"))
+                self.assertIn("不代表", result["domain_evidence"])
+        # A LoRA's concept name is not evidence that it is an audio component.
+        self.assertEqual(c.classify({"mtype": "LoRA", "filename": "audio_vae_style.safetensors"})["domain"], "unknown")
+
+    def test_component_metadata_family_and_manual_precede_filename_hints(self):
+        model = {"mtype": "VAE", "filename": "video_vae.safetensors", "family": "SDXL", "family_conf": "confirmed"}
+        self.assertEqual(c.classify(model)["domain_source"], "architecture")
+        self.assertEqual(c.classify(model)["domain"], "image")
+        model["header_meta"] = {"modelspec.architecture": "stable-audio"}
+        result = c.classify(model)
+        self.assertEqual((result["domain"], result["domain_source"]), ("audio", "metadata"))
+        result = c.classify(model, manual={"domain": "shared", "architecture": "reviewed-family"})
+        self.assertEqual((result["domain"], result["domain_source"]), ("shared", "manual"))
+        self.assertEqual((result["architecture"], result["architecture_source"]), ("reviewed-family", "manual"))
+
+    def test_minimax_audio_component_is_not_the_family_video_workflow(self):
+        model = {"mtype": "VAE", "filename": "minimax_h3_audio_vae_fp32.safetensors",
+                 "family": "MiniMaxH3", "family_conf": "confirmed", "scope": "central"}
+        result = c.classify(model)
+        self.assertEqual((result["domain"], result["domain_source"]), ("audio", "filename"))
+        self.assertEqual(result["architecture"], "MiniMaxH3")
+        self.assertTrue(result["classification_pending"])
+        self.assertIn("保留", result["domain_evidence"])
+        result = c.classify(model, manual={"domain": "video"})
+        self.assertEqual((result["domain"], result["domain_source"]), ("video", "manual"))
+        # Explicit embedded component evidence wins a misleading filename.
+        model["header_meta"] = {"modelspec.architecture": "minimax_h3_video_vae"}
+        result = c.classify(model)
+        self.assertEqual((result["domain"], result["domain_source"]), ("video", "metadata"))
+        model["header_meta"] = {"modelspec.architecture": "minimax_h3_audio_vae"}
+        self.assertEqual(c.classify(model)["domain"], "audio")
+        result = c.classify({"mtype": "VAE", "filename": "vae.safetensors", "family": "minimax_h3_audio_vae", "family_conf": "confirmed"})
+        self.assertEqual((result["domain"], result["domain_source"]), ("audio", "architecture"))
 
     def test_metadata_and_manual_choices_have_explicit_precedence(self):
         model = {"mtype": "LoRA", "family": "Unknown", "filename": "lighting-style.safetensors",
@@ -90,6 +151,25 @@ class CategoryAPI(Fixture):
         detail = self.payload(api.model_detail(self.db, self.cfg, {"id": mid}, None))
         self.assertEqual(detail["classification"]["purposes"], ["uncategorized"])
         self.assertEqual(detail["notes"], "keep my notes")
+
+    def test_component_domain_facets_and_manual_override_survive_rescan(self):
+        audio = self.add("minimax_h3_audio_vae_fp32.safetensors", "unknown", "VAE")
+        self.add("minimax_h3_video_vae_fp16.safetensors", "unknown", "VAE")
+        self.add("qwen_image_vae.safetensors", "unknown", "VAE")
+        self.add("vae.safetensors", "unknown", "VAE")
+        result = self.payload(api.models_list(self.db, self.cfg, {}, None))
+        counts = {item["id"]: item["count"] for item in result["facets"]["domains"]}
+        self.assertEqual({key: counts.get(key, 0) for key in ("audio", "video", "image", "unknown", "shared")},
+                         {"audio": 1, "video": 1, "image": 1, "unknown": 1, "shared": 0})
+        self.payload(api.models_classify(self.db, self.cfg, {}, {"ids": [audio], "domain": "video"}))
+        row = self.db.one("SELECT * FROM models WHERE rowid_pk=?", (audio,))
+        self.db.upsert_model({"path": row["path"], "filename": row["filename"], "mtype": "VAE", "family": "unknown"})
+        detail = self.payload(api.model_detail(self.db, self.cfg, {"id": audio}, None))
+        self.assertEqual((detail["classification"]["domain"], detail["classification"]["domain_source"]), ("video", "manual"))
+        self.assertEqual((detail["rating"], detail["notes"]), (7, "keep my notes"))
+        self.payload(api.models_classify(self.db, self.cfg, {}, {"ids": [audio], "reset": True}))
+        detail = self.payload(api.model_detail(self.db, self.cfg, {"id": audio}, None))
+        self.assertEqual((detail["classification"]["domain"], detail["classification"]["domain_source"]), ("audio", "filename"))
 
     def test_bulk_updates_leave_unspecified_fields_and_non_lora_purposes_unchanged(self):
         a, b = self.add("style.safetensors"), self.add("base.safetensors", kind="Checkpoint")
