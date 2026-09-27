@@ -1,3 +1,17 @@
+# 曜核 · 最新候选下载
+
+**最新候选版：2.13.1。** 新版使用金色眼形图标，包含能力中心、工作端发现、右键操作、工作区引导、软件更新，以及配套模型用途分类修复。
+
+- [下载 Windows x64 程序包（2.13.1，约 1.35 MiB）](https://raw.githubusercontent.com/NOXEVYR/ai-hub/5b35744c3657077c7aaf257297816cfd3fbeaa3b/releases/AI-Hub-v2.13.1-Windows-x64.zip)
+- [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/5b35744c3657077c7aaf257297816cfd3fbeaa3b/releases/AI-Hub-v2.13.1-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/blob/5b35744c3657077c7aaf257297816cfd3fbeaa3b/releases/AI-Hub-v2.13.1-SHA256.txt)
+- [当前候选通道与完整说明](https://github.com/NOXEVYR/ai-hub/tree/feat/aihub-collaboration-2.7.0) · [2.13.1 更新说明](https://github.com/NOXEVYR/ai-hub/blob/5b35744c3657077c7aaf257297816cfd3fbeaa3b/docs/RELEASE_2.13.1.md)
+
+2.12 及以上可通过软件内“软件更新”获取候选版。**2.6 等旧版没有软件更新器，首次升级需下载新版程序包**；先退出旧程序并备份，保留个人 `data`、模型与环境。新电脑仍需 Python 3.9+ 和 WebView2；包不含这些依赖，也不含作者的用户数据。
+
+候选通道与历史稳定附件分开管理，未宣称新候选已成为稳定 Release。以下是 main 中保留的 2.6 历史说明，旧包仅供历史使用；请从上方获取新版。
+
+---
+
 # AI Hub
 
 [返回项目总览](https://github.com/turnsolesama/portfolio) · [仓库迁移说明](https://github.com/turnsolesama/ai-hub/blob/main/MIGRATION.md)
@@ -126,3 +140,4 @@ python -B tools/package_release.py --exe "AI Hub.exe" --output releases
 ## 2.5 分类与项目登记
 
 2.5.0 当时引入以下分类与登记；桌面壳沿用 2.4.1（本次未修改桌面功能）。新增项目、知识、运行登记与四级工作流证据状态，详见 [结构升级说明](docs/STRUCTURE_2.5.md) 和 [登记格式](docs/REGISTRY.md)。
+
