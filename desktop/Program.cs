@@ -17,8 +17,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.13.1.0")]
-[assembly: AssemblyFileVersion("2.13.1.0")]
+[assembly: AssemblyVersion("2.13.2.0")]
+[assembly: AssemblyFileVersion("2.13.2.0")]
 
 namespace AIHub.Desktop
 {

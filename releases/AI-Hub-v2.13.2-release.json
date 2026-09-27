@@ -1,0 +1,19 @@
+{
+  "version": "2.13.2",
+  "packages": [
+    {
+      "name": "AI-Hub-v2.13.2-Source.zip",
+      "bytes": 1020240,
+      "sha256": "48aae751fde44a9822b89846ddefd1764dddcd77d3da25786924172b32fe92d2",
+      "files": 165,
+      "kind": "Source"
+    },
+    {
+      "name": "AI-Hub-v2.13.2-Windows-x64.zip",
+      "bytes": 1415161,
+      "sha256": "988a4447efbc537fb266d17bfc48e3f4274361916cb2e76980b8da7a60b56627",
+      "files": 166,
+      "kind": "Windows-x64"
+    }
+  ]
+}

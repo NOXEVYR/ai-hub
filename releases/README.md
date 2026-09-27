@@ -1,13 +1,13 @@
-# 曜核 2.13.1 候选下载
+# 曜核 2.13.2 下载
 
-修复配套模型用途识别：明确区分文件名建议、未知用途与兼容架构。保留 2.13.0 的能力中心、上下文右键和新电脑引导。
+曜核就是 AI Hub 改名后的新版，请使用最新版本。旧包仅作历史存档，不作为稳定版推荐。
 
-- [Windows x64 包](AI-Hub-v2.13.1-Windows-x64.zip) — 1,414,321 字节
-- [源码包](AI-Hub-v2.13.1-Source.zip) — 1,019,391 字节
-- [SHA-256](AI-Hub-v2.13.1-SHA256.txt) · [包清单](AI-Hub-v2.13.1-release.json)
-- [更新说明](../docs/RELEASE_2.13.1.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
+- [Windows x64 包](AI-Hub-v2.13.2-Windows-x64.zip) — 1,415,161 字节
+- [源码包](AI-Hub-v2.13.2-Source.zip) — 1,020,240 字节
+- [SHA-256](AI-Hub-v2.13.2-SHA256.txt) · [包清单](AI-Hub-v2.13.2-release.json)
+- [更新说明](../docs/RELEASE_2.13.2.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
 
-当前为候选版。2.12.0 可使用软件更新器；更早版本首次升级需替换程序包。包不含用户数据、配置、模型、图库或凭据。
+2.12 及以上可使用软件更新器；2.6 等旧版首次升级需下载程序包。candidate 是更新通道标识。包不含用户数据、模型、凭据、Python 或 WebView2 运行环境。
 
 ## 历史下载保留
 

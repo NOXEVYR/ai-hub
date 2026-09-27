@@ -12,7 +12,7 @@
 
 ## 发布渠道与保护
 
-当前使用 NOXEVYR/ai-hub 的候选通道，候选版不等于稳定版 Release。更新清单固定在 `feat/aihub-collaboration-2.7.0` 分支的 `updates/candidate.json`。程序只构造本仓库固定提交下的 Windows 包地址；清单不能指定其他域名、任意下载地址或执行命令。
+当前使用 NOXEVYR/ai-hub 的候选通道，candidate 是现有更新通道标识；曜核是 AI Hub 的改名升级，不是另一款软件。旧版仅作历史存档，不作为稳定版推荐。更新清单固定在 `feat/aihub-collaboration-2.7.0` 分支的 `updates/candidate.json`。程序只构造本仓库固定提交下的 Windows 包地址；清单不能指定其他域名、任意下载地址或执行命令。
 
 下载校验大小和 SHA-256，解包校验路径、文件白名单及每个程序文件摘要。只替换程序文件，保留 `data`、模型、图库、配置、数据库、运行环境和本机 `AGENTS.md`。本地程序发生未记录修改或文件冲突时停止更新，避免覆盖手工改动。
 

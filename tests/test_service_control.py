@@ -184,7 +184,7 @@ class ControlHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(value['service_instance_id'], self.control.record['instance_id'])
         self.assertEqual(value['control_protocol'], service_control.PROTOCOL)
-        self.assertEqual(value['desktop_shell_version'], '2.13.1')
+        self.assertEqual(value['desktop_shell_version'], '2.13.2')
         self.assertNotIn('token', value)
 
     def test_accepted_stop_refuses_new_http_work(self):
@@ -276,6 +276,10 @@ class RealProcessTests(unittest.TestCase):
                     with opener.open(base + '/api/health', timeout=3) as response:
                         health = json.load(response)
                     self.assertEqual(health['service_instance_id'], value['instance_id'])
+                    with opener.open(base + '/api/app-update/status', timeout=3) as response:
+                        update_state = json.load(response)
+                    self.assertEqual(update_state['current_version'], health['version'])
+                    self.assertEqual(health['desktop_shell_version'], health['version'])
                     request = urllib.request.Request(base + '/api/desktop/shutdown',
                         data=json.dumps({'instance_id': value['instance_id'], 'install_root': value['install_root']}).encode('utf-8'),
                         headers={'Content-Type': 'application/json', 'X-AIHub-Control-Token': value['token']})
