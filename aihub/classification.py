@@ -53,7 +53,7 @@ DOMAINS = {
     "language": {"label": "语言与对话", "description": "文本生成、对话与推理", "icon": "message"},
     "audio": {"label": "语音与音乐", "description": "配音、声音与音乐生成", "icon": "audio"},
     "vision": {"label": "视觉工具", "description": "识别、分割与图像分析", "icon": "scan"},
-    "shared": {"label": "通用组件", "description": "用途未绑定的编码器等组件", "icon": "cpu"},
+    "shared": {"label": "通用组件", "description": "用户确认可跨用途使用的组件；兼容架构仍须核对", "icon": "cpu"},
     "unknown": {"label": "用途待确认", "description": "现有证据不足，支持手动归类", "icon": "folder"},
 }
 PURPOSES = {
@@ -119,6 +119,33 @@ def family_domain(value):
     return None
 
 
+def _component_name_domain(value, kind):
+    """Conservative hints only: component names do not prove compatibility."""
+    role = {"VAE": r"vae", "TextEncoder": r"(?:text[._ -]?)?encoder",
+            "Embedding": r"embeddings?"}.get(kind)
+    if not role:
+        return None
+    # Inspect only the basename, never a folder called audio/video/image. Token
+    # boundaries exclude names such as audiovisual, videographer or imageboard.
+    name = re.split(r"[\\/]", str(value or ""))[-1].casefold()
+    domains = set()
+    for domain in ("audio", "video", "image"):
+        if re.search(r"(?:^|[._ -])(?:" + domain + r"[._ -]+" + role +
+                     r"|" + role + r"[._ -]+" + domain + r")(?:[._ -]|$)", name):
+            domains.add(domain)
+    # Named image/video families are useful when the modality is not written
+    # separately, but remain suggestions and never populate architecture.
+    families = {
+        "image": r"(?:sdxl|sd[._-]?1[._-]?5|sd3(?:[._-]5)?|flux(?:[._-]?1)?|qwen[._ -]?image)",
+        "video": r"(?:wan(?:[._-]?2(?:[._-][12])?)?|hunyuan[._ -]?video|ltx[._ -]?video|cog[._ -]?video|mochi)",
+        "audio": r"(?:stable[._ -]?audio|audio[._ -]?ldm)",
+    }
+    for domain, family in families.items():
+        if re.search(r"(?:^|[._ -])" + family + r"[._ -]+" + role + r"(?:[._ -]|$)", name):
+            domains.add(domain)
+    return next(iter(domains)) if len(domains) == 1 else None
+
+
 def _automatic_domain(model, audit, metadata):
     kind = model.get("mtype") or audit.get("category")
     if kind in {"LLM", "Language"}:
@@ -128,18 +155,26 @@ def _automatic_domain(model, audit, metadata):
     if kind in {"Vision", "CLIPVision", "Detection"}:
         return "vision", "record", "已记录为视觉识别/分析组件"
     for value in (metadata.get("modelspec.architecture"), metadata.get("ss_base_model_version")):
-        domain = family_domain(value)
+        domain = _component_name_domain(value, kind) or family_domain(value)
         if domain:
             return domain, "metadata", "模型内嵌架构：" + str(value)
+    name_domain = _component_name_domain(model.get("filename"), kind)
     family = audit.get("family") or model.get("family")
-    domain = family_domain(family)
+    domain = _component_name_domain(family, kind) or family_domain(family)
     if domain:
         confidence = audit.get("family_confidence") or model.get("family_conf")
+        # MiniMaxH3 names describe a video family, including an audio VAE. Its
+        # component's use is more specific than the family's overall workflow.
+        family_key = re.sub(r"[^a-z0-9]", "", str(family or "").casefold())
+        if kind == "VAE" and family_key == "minimaxh3" and name_domain == "audio":
+            return "audio", "filename", "文件名明确标注音频 VAE；保留 MiniMaxH3 架构记录，组件用途仍待核验"
         return domain, "architecture" if confidence == "confirmed" else "suggested", "架构记录：" + str(family) + ("（已有结构证据）" if confidence == "confirmed" else "（包含推断）")
     if kind == "VideoAI":
         return "video", "record", "已记录为视频处理模型"
     if kind in {"Upscaler", "IPAdapter", "ControlNet"}:
         return "image", "suggested", "按已记录组件类型建议；具体兼容架构仍需核对"
+    if name_domain:
+        return name_domain, "filename", "根据文件名中的明确组件用途建议；兼容架构和实际用途仍需核验"
     paths = [audit.get("old_path", ""), *(_object(model.get("alt_paths"), []))]
     parts = [part.casefold() for path in paths for part in re.split(r"[\\/]", str(path))]
     if any(part in {"视频lora", "video_lora", "video_loras"} for part in parts):
@@ -147,7 +182,7 @@ def _automatic_domain(model, audit, metadata):
     if any(part in {"图像lora", "风格lora", "人物lora", "sd1.5风格"} for part in parts):
         return "image", "folder", "沿用原目录中的图片 LoRA 分类，架构仍待核对"
     if kind in {"TextEncoder", "VAE", "Embedding"}:
-        return "shared", "record", "配套组件；尚无足够证据绑定创作用途"
+        return "unknown", "unknown", "配套组件；用途证据不足，不代表可跨模型通用"
     return "unknown", "unknown", "现有类型和架构记录不足以确定用途"
 
 
@@ -227,7 +262,7 @@ def classify(model, audit=None, manual=None):
         if architecture_source != "manual":
             architecture_source = "unknown"
     registered = bool(audit)
-    pending = role == "Unknown" or scope == "unknown" or domain == "unknown" or architecture == "未确认" or (is_lora and "uncategorized" in reasons)
+    pending = role == "Unknown" or scope == "unknown" or domain == "unknown" or domain_source == "filename" or architecture == "未确认" or (is_lora and "uncategorized" in reasons)
     return {"scope": scope, "scope_label": SCOPES[scope], "model_role": role, "model_role_label": MODEL_ROLES[role],
             "model_role_source": role_source, "architecture": architecture, "architecture_source": architecture_source,
             "indexed": bool(model.get("rowid_pk") or model.get("indexed")), "registered": registered,

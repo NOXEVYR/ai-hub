@@ -35,7 +35,7 @@ CFG = {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIHub/2.13.0"
+    server_version = "AIHub/2.13.1"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))

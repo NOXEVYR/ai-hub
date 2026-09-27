@@ -1,15 +1,17 @@
-# 曜核 2.13.0 候选下载
+# 曜核 2.13.1 候选下载
 
-新增能力中心：用途与工作端交叉筛选、本机 Skill 与接口线索发现、自定义来源；补齐上下文右键操作和新电脑工作区引导。
+修复配套模型用途识别：明确区分文件名建议、未知用途与兼容架构。保留 2.13.0 的能力中心、上下文右键和新电脑引导。
 
-- [Windows x64 包](AI-Hub-v2.13.0-Windows-x64.zip) — 1,409,739 字节
-- [源码包](AI-Hub-v2.13.0-Source.zip) — 1,014,810 字节
-- [SHA-256](AI-Hub-v2.13.0-SHA256.txt) · [包清单](AI-Hub-v2.13.0-release.json)
-- [更新说明](../docs/RELEASE_2.13.0.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
+- [Windows x64 包](AI-Hub-v2.13.1-Windows-x64.zip) — 1,414,321 字节
+- [源码包](AI-Hub-v2.13.1-Source.zip) — 1,019,391 字节
+- [SHA-256](AI-Hub-v2.13.1-SHA256.txt) · [包清单](AI-Hub-v2.13.1-release.json)
+- [更新说明](../docs/RELEASE_2.13.1.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
 
 当前为候选版。2.12.0 可使用软件更新器；更早版本首次升级需替换程序包。包不含用户数据、配置、模型、图库或凭据。
 
 ## 历史下载保留
+
+- 2.13.0：[Windows](AI-Hub-v2.13.0-Windows-x64.zip) · [源码](AI-Hub-v2.13.0-Source.zip)
 
 - 2.12.0：[Windows](AI-Hub-v2.12.0-Windows-x64.zip) · [源码](AI-Hub-v2.12.0-Source.zip) · [SHA-256](AI-Hub-v2.12.0-SHA256.txt)
 
