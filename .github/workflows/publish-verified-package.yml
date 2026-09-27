@@ -1,0 +1,139 @@
+name: Publish verified current package
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-verified-package.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-verified-current-package
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Verify immutable packages and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SPEC: >-
+            {"repository": "NOXEVYR/ai-hub", "commit": "2ff98cd194540497ec90152592fe90d2241da34e", "tag": "v2.13.2", "title": "曜核 2.13.2", "manifest": "AI-Hub-v2.13.2-release.json", "packages": [{"name": "AI-Hub-v2.13.2-Windows-x64.zip", "bytes": 1415161, "sha256": "988a4447efbc537fb266d17bfc48e3f4274361916cb2e76980b8da7a60b56627"}, {"name": "AI-Hub-v2.13.2-Source.zip", "bytes": 1020240, "sha256": "48aae751fde44a9822b89846ddefd1764dddcd77d3da25786924172b32fe92d2"}], "notes": "曜核是 AI Hub 持续优化、改名后的同一款软件。请下载本页的当前版本；旧版下载入口仅作历史存档。\n\n## 本版更新\n\n- 修复 VAE、编码器等配套模型的用途分类，区分名称建议与已核验信息，保留人工分类。\n- 修复主程序与更新器的版本一致性，避免更新后重复提示同一版本。\n- 保留能力中心、工作端与协作任务、右键操作、工作区引导和软件更新。\n\n## 下载与运行\n\nAssets 中的 **AI-Hub-v2.13.2-Windows-x64.zip** 是 Windows 桌面包，解压后启动兼容文件名 **AI Hub.exe**，界面名称为曜核。**AI-Hub-v2.13.2-Source.zip** 是配套源码包。\n\n需要 Windows x64、.NET Framework 4.8+、Python 3.9+ 和 WebView2 Runtime；不含模型权重。MCP 适配器另需 Python 3.10+，配置助手需 Python 3.11+。\n\n这是此前已公开程序包的原样发布，上传前核对大小、SHA-256 和 ZIP CRC；未重新构建程序。SHA256SUMS.txt 与发布 manifest 随附件提供。更新器沿用 candidate 通道标识；能力发现或登记不代表第三方接口已接通。\n\n[使用说明](https://github.com/NOXEVYR/ai-hub#readme) · [本版记录](https://github.com/NOXEVYR/ai-hub/blob/2ff98cd194540497ec90152592fe90d2241da34e/docs/RELEASE_2.13.2.md)\n"}
+        run: |
+          python - <<'PY'
+          """Publish only the explicitly reviewed, immutable public package set."""
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import sys
+          import tempfile
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          
+          spec = json.loads(os.environ['RELEASE_SPEC'])
+          repo, commit, tag = spec['repository'], spec['commit'], spec['tag']
+          assert repo in ('NOXEVYR/ai-hub', 'NOXEVYR/frameweave')
+          assert re.fullmatch(r'[0-9a-f]{40}', commit)
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag)
+          token = os.environ.get('GH_TOKEN')
+          headers = {'User-Agent': 'verified-public-package-publisher', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          
+          def api(path, method='GET', body=None):
+              assert token, 'GH_TOKEN required for publishing'
+              url = 'https://api.github.com/repos/' + repo + '/' + path
+              request = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                  headers={**headers, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=45) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  if error.code == 404 and method == 'GET':
+                      return None
+                  raise RuntimeError(f'GitHub {method} {path}: HTTP {error.code}') from None
+          
+          def download(name, limit):
+              assert PurePosixPath(name).name == name and 0 < limit <= 50 * 1024 * 1024
+              url = f'https://raw.githubusercontent.com/{repo}/{commit}/releases/{urllib.parse.quote(name)}'
+              with urllib.request.urlopen(url, timeout=60) as response:
+                  raw = response.read(limit + 1)
+              if len(raw) > limit:
+                  raise ValueError(f'{name}: exceeds declared size')
+              return raw
+          
+          with tempfile.TemporaryDirectory(prefix='verified-release-') as temporary:
+              root = Path(temporary)
+              manifest_bytes = download(spec['manifest'], 100_000)
+              manifest = json.loads(manifest_bytes)
+              assert manifest['version'] == tag[1:]
+              declared = manifest.get('packages', manifest.get('artifacts', []))
+              records = []
+              for expected in spec['packages']:
+                  name = expected['name']
+                  matches = [item for item in declared if item['name'] == name]
+                  assert len(matches) == 1, f'{name}: manifest entry missing or duplicated'
+                  actual = matches[0]
+                  for key in ('bytes', 'sha256'):
+                      assert actual[key] == expected[key], f'{name}: changed manifest {key}'
+                  raw = download(name, expected['bytes'])
+                  assert len(raw) == expected['bytes'], f'{name}: size mismatch'
+                  assert hashlib.sha256(raw).hexdigest() == expected['sha256'], f'{name}: SHA-256 mismatch'
+                  path = root / name
+                  path.write_bytes(raw)
+                  with zipfile.ZipFile(path) as archive:
+                      names = archive.namelist()
+                      assert archive.testzip() is None, f'{name}: ZIP CRC mismatch'
+                      assert all(not PurePosixPath(n.replace('\\', '/')).is_absolute() and '..' not in PurePosixPath(n.replace('\\', '/')).parts for n in names)
+                      assert len({PurePosixPath(n.replace('\\', '/')).parts[0] for n in names}) == 1, f'{name}: unexpected package roots'
+                  records.append({**expected, 'data': raw, 'content_type': 'application/zip'})
+                  print(f'Verified {name}: {len(raw)} bytes, SHA-256 {expected["sha256"]}')
+              checksums = ''.join(f'{record["sha256"]}  {record["name"]}\n' for record in records).encode()
+              for name, raw, content_type in [(spec['manifest'], manifest_bytes, 'application/json'), ('SHA256SUMS.txt', checksums, 'text/plain')]:
+                  records.append({'name': name, 'data': raw, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'content_type': content_type})
+              if '--verify-only' in sys.argv:
+                  print('All reviewed packages verified; no external mutation.')
+                  sys.exit(0)
+              assert os.environ.get('GITHUB_REPOSITORY') == repo, 'Wrong repository context'
+              assert os.environ.get('GITHUB_REF') == 'refs/heads/main', 'Publish only from main'
+              existing_tag = api('git/ref/tags/' + tag)
+              if existing_tag:
+                  assert existing_tag['object']['type'] == 'commit' and existing_tag['object']['sha'] == commit, 'Existing tag points elsewhere; refusing to alter it'
+              release = api('releases/tags/' + tag)
+              if release is None:
+                  release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': commit, 'name': spec['title'],
+                      'body': spec['notes'], 'draft': True, 'prerelease': False, 'make_latest': 'false'})
+              expected_names = {record['name'] for record in records}
+              assert not release['prerelease'], 'Existing release has different channel metadata'
+              assert not ({asset['name'] for asset in release['assets']} - expected_names), 'Unexpected assets on existing release; refusing to publish or delete them'
+              assert release['tag_name'] == tag and release['name'] == spec['title'] and release['body'] == spec['notes'], 'Existing release metadata differs from the reviewed release; refusing to overwrite it'
+              assets = {asset['name']: asset for asset in release['assets']}
+              for record in records:
+                  asset = assets.get(record['name'])
+                  if asset is None:
+                      assert release['draft'], 'Published release is missing an expected asset; refusing to modify it'
+                      upload = release['upload_url'].split('{', 1)[0]
+                      assert upload.startswith(f'https://uploads.github.com/repos/{repo}/releases/')
+                      request = urllib.request.Request(upload + '?name=' + urllib.parse.quote(record['name']), data=record['data'],
+                          headers={**headers, 'Authorization': 'Bearer ' + token, 'Content-Type': record['content_type']}, method='POST')
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          asset = json.load(response)
+                  assert asset['state'] == 'uploaded' and asset['size'] == record['bytes'] and asset.get('digest') == 'sha256:' + record['sha256'], 'Uploaded asset metadata mismatch; existing assets were not overwritten'
+              latest = api('releases/latest')
+              newer_latest = False
+              if latest and latest['id'] != release['id']:
+                  match = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', latest['tag_name'])
+                  assert match or latest['tag_name'] == 'downloads-2026-09-12', 'Unknown latest release tag; refusing to change its status'
+                  newer_latest = bool(match and tuple(map(int, match.groups())) > tuple(map(int, tag[1:].split('.'))))
+              if release['draft']:
+                  # Publish only after every attachment is present and GitHub reports the expected digest.
+                  release = api('releases/' + str(release['id']), 'PATCH', {'draft': False, 'make_latest': 'false' if newer_latest else 'true'})
+              elif not newer_latest and (not latest or latest['id'] != release['id']):
+                  release = api('releases/' + str(release['id']), 'PATCH', {'make_latest': 'true'})
+              print('Verified public release:', release['html_url'])
+          PY
