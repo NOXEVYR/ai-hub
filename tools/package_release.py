@@ -7,13 +7,15 @@ import re
 import struct
 import zipfile
 
-VERSION = "2.13.2"
+VERSION = "2.13.10"
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = ("server.py", "launcher.pyw", "start.vbs", "start.bat", "debug.bat", ".gitignore", "THIRD_PARTY_NOTICES.md")
 SUBDIRS = {"aihub": {".py"}, "frontend": {".js", ".html", ".css", ".svg", ".ico", ".png"},
            "desktop": {".py", ".cs", ".manifest", ".txt", ".md"},
            "tests": {".py", ".js"}, "tools": {".py"}, "docs": {".md"}}
 EXCLUDED_PARTS = {"data", "backups", "vendor", "runtime", "__pycache__", "_tmp", ".git"}
+# An unfrozen cross-product contract ships separately, never as a partial runtime contract.
+SIDECAR_ROOTS = ("docs/coop-00",)
 
 
 def source_files(root):
@@ -32,7 +34,10 @@ def source_files(root):
         add(name, root / name)
     for folder, extensions in SUBDIRS.items():
         for path in sorted((root / folder).rglob("*")):
-            if path.is_file() and path.suffix.lower() in extensions and not EXCLUDED_PARTS.intersection(path.relative_to(root).parts):
+            relative = path.relative_to(root)
+            is_sidecar = any(relative.as_posix() == prefix or relative.as_posix().startswith(prefix + "/")
+                             for prefix in SIDECAR_ROOTS)
+            if path.is_file() and not is_sidecar and path.suffix.lower() in extensions and not EXCLUDED_PARTS.intersection(relative.parts):
                 add(path.relative_to(root).as_posix(), path)
     add("README.md", root / "docs/DISTRIBUTION_README.md")
     add("AGENTS.md", root / "docs/REPOSITORY_AGENTS.md")

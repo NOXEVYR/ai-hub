@@ -13,7 +13,7 @@ test('credential renderer never serializes values or secrets',()=>{
  assert.match(html,/TOKEN_NAME/);assert.match(html,/已配置/);assert(!html.includes('top-secret'));assert(!html.includes('private'));
 });
 test('fresh workspace guide explains ownership and offers an explicit setup path',()=>{
- const ws=require('../frontend/workspace.js');assert.match(ws.welcome(false),/开始设置工作环境/);assert.match(ws.welcome(false),/图像生成、视频创作和代码执行仍由各自的工具完成/);assert.match(ws.welcome(true),/^<details/);
+ const ws=require('../frontend/workspace.js');assert.match(ws.welcome(false),/开始设置工作区/);assert.match(ws.welcome(false),/图像生成、视频创作和代码执行仍由各自的工具完成/);assert.match(ws.welcome(true),/^<details/);
 });
 test('all resource kinds use independent purpose and work-end dimensions',()=>{
  const items=[{kind:'skill',name:'多用途',domains:['video','code'],tools:['codex','dsh']},{kind:'interface',name:'独立视频接口',domains:['video'],tools:[]},{kind:'credential',variable:'VIDEO_TOKEN',domains:['video'],tools:['dsh']}];

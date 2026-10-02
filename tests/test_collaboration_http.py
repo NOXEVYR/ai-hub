@@ -65,6 +65,27 @@ class CollaborationHTTP(unittest.TestCase):
         self.assertEqual(code, 200, result)
         return result
 
+    def test_source_reconfirmation_http_requires_bound_ui_preview(self):
+        source_path = self.base / 'Reports'
+        source_path.mkdir()
+        (source_path / 'old.md').write_text('old')
+        source = self.call('source_add', {'path': str(source_path), 'tool': 'codex'})
+        self.call('source_scan', {'source_id': source['id']})
+        source_path.rename(self.base / 'RetainedReports')
+        source_path.mkdir()
+        (source_path / 'new.md').write_text('new')
+        body = {'source_id': source['id'], '_workspace_root': str(self.root)}
+        self.assertEqual(self.request('/api/collaboration/source_scan', body)[0], 400)
+        self.assertEqual(self.request('/api/collaboration/source_reconfirm_preview', {'source_id': source['id']})[0], 400)
+        self.assertEqual(self.request('/api/collaboration/mcp/source_reconfirm_preview', body)[0], 403)
+        preview = self.call('source_reconfirm_preview', body)
+        self.assertNotEqual(preview['previous_identity'], preview['current_identity'])
+        self.assertEqual(preview['retained_inventory_count'], 1)
+        result = self.call('source_reconfirm_apply', {'token': preview['token'], '_workspace_root': str(self.root)})
+        self.assertTrue(result['applied'])
+        self.assertTrue(self.call('source_scan', body)['progress']['complete'])
+        self.assertEqual(self.call('source_inventory')['items'][0]['title'], 'new.md')
+
     def test_real_stdio_chinese_report_memory_review_and_cross_harness_handoff(self):
         code, registered = self.request('/api/harnesses/save', {
             'id': 'studio-cli', 'name': 'Synthetic Studio', 'revision': 0,
@@ -117,7 +138,7 @@ class CollaborationHTTP(unittest.TestCase):
         task = tool('task_create', {'project': '中文协作', 'title': '报告与交接验收'})
         claim = tool('task_claim', {'task_id': task['id']})
         owner = {'task_id': task['id'], 'lease_token': claim['lease_token']}
-        report = tool('artifact_write', {**owner, 'kind': 'report', 'title': '正式验收', 'filename': '验收.md', 'content': '# 中文报告\n可追溯结论。'})
+        report = tool('artifact_write', {**owner, 'kind': 'report', 'category': 'report', 'title': '正式验收', 'filename': '验收.md', 'content': '# 中文报告\n可追溯结论。'})
         self.assertEqual(Path(report['path']).read_text(encoding='utf-8'), '# 中文报告\n可追溯结论。')
         candidate = tool('memory_propose', {'title': '共享约定', 'content': '确认后的稳定结论', 'scope': 'workspace', 'source_artifact_id': report['id']})
         self.assertEqual(tool('memory_search', {'query': '稳定'})['items'], [])
@@ -128,6 +149,9 @@ class CollaborationHTTP(unittest.TestCase):
         tool('task_handoff', {**owner, 'target_tool': 'workbuddy', 'summary': '请复核已登记报告'})
         self.call('client_heartbeat', {'client_id': 'wb-integration', 'tool': 'workbuddy', 'name': 'synthetic WorkBuddy', 'protocol_version': 1}, True)
         wb = self.call('task_claim', {'task_id': task['id'], 'client_id': 'wb-integration'}, True)
+        self.call('artifact_write', {'task_id': task['id'], 'client_id': 'wb-integration',
+            'lease_token': wb['lease_token'], 'kind': 'report', 'category': 'report', 'title': '交接复核报告',
+            'filename': '复核.md', 'content': '本次领取已复核', 'memory_candidates': []}, True)
         self.call('task_finish', {'task_id': task['id'], 'client_id': 'wb-integration', 'lease_token': wb['lease_token'], 'summary': '交接闭环通过'}, True)
         code, status = self.request('/api/collaboration/status')
         self.assertEqual(code, 200)
@@ -138,7 +162,8 @@ class CollaborationHTTP(unittest.TestCase):
         self.assertTrue(evidence['recent_heartbeat'])
         self.assertTrue(evidence['invocation_verified'])
         self.assertEqual(evidence['verification_scope'], 'successful_aihub_protocol_call_only')
-        self.assertEqual(status['mcp_config']['mcpServers']['aihub']['args'][2], str(self.http.server_address[1]))
+        args = status['mcp_config']['mcpServers']['aihub']['args']
+        self.assertEqual(args[1:3], ['--install-root', str(Path(config.APP_DIR).resolve())])
         end_bridge()
         reader.join(3)
         stderr.seek(0)
@@ -150,7 +175,7 @@ class CollaborationHTTP(unittest.TestCase):
         claim = self.call('task_claim', {'task_id': task['id'], 'client_id': 'test'})
         owner = {'task_id': task['id'], 'client_id': 'test', 'lease_token': claim['lease_token']}
         temp = self.call('artifact_write', {**owner, 'kind': 'temp', 'title': '临时', 'filename': 'scratch.txt', 'content': 'scratch'})
-        report = self.call('artifact_write', {**owner, 'kind': 'report', 'title': '报告', 'filename': 'report.md', 'content': 'keep'})
+        report = self.call('artifact_write', {**owner, 'kind': 'report', 'category': 'report', 'title': '报告', 'filename': 'report.md', 'content': 'keep', 'memory_candidates': []})
         self.call('task_finish', {**owner, 'summary': 'done'})
         with core.store(self.cfg) as (con, root):
             con.execute("UPDATE artifacts SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?", (temp['id'],))

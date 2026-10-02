@@ -31,6 +31,11 @@ namespace AIHub.Desktop
             return Post("/api/desktop/update/check", new Dictionary<string, object>());
         }
 
+        internal static void UiReady()
+        {
+            Post("/api/desktop/update/ui_ready", new Dictionary<string, object>());
+        }
+
         internal static Dictionary<string, object> Settings(bool autoCheck, bool autoInstall)
         {
             return Post("/api/desktop/update/settings", new Dictionary<string, object> {
@@ -125,17 +130,21 @@ namespace AIHub.Desktop
                 {
                     Dictionary<string, object> body = null;
                     try { body = ReadBody(response); } catch { }
-                    string message = Hub.TextValue(body, "message");
-                    if (String.IsNullOrWhiteSpace(message)) message = Hub.TextValue(body, "safe_message");
-                    if (String.IsNullOrWhiteSpace(message))
-                    {
-                        if ((int)response.StatusCode == 403) message = "本机更新请求未通过身份校验，请重新打开曜核后重试。";
-                        else if ((int)response.StatusCode == 409) message = "当前有更新操作正在进行，请稍后重试。";
-                        else message = "更新服务暂时无法完成该操作，请稍后重试。";
-                    }
-                    throw new InvalidOperationException(message);
+                    throw new InvalidOperationException(ErrorMessage(body, (int)response.StatusCode));
                 }
             }
+        }
+
+        internal static string ErrorMessage(Dictionary<string, object> body, int statusCode)
+        {
+            foreach (string key in new[] { "safe_message", "message", "error" })
+            {
+                string message = Hub.TextValue(body, key);
+                if (!String.IsNullOrWhiteSpace(message)) return message.Length > 500 ? message.Substring(0, 500) : message;
+            }
+            if (statusCode == 403) return "本机更新请求未通过身份校验，请重新打开曜核后重试。";
+            if (statusCode == 409) return "当前安装条件不满足，请重新检查更新；若仍失败，请检查安装文件是否完整。";
+            return "更新服务暂时无法完成该操作，请稍后重试。";
         }
 
         private static Dictionary<string, object> ReadBody(HttpWebResponse response)
@@ -151,6 +160,39 @@ namespace AIHub.Desktop
                 if (result == null) throw new InvalidDataException("本机更新服务响应格式无效。");
                 return result;
             }
+        }
+    }
+
+    internal static class AppUpdateInstallGuard
+    {
+        internal static bool CanInstall(bool? dirty)
+        {
+            return dirty.HasValue && !dirty.Value;
+        }
+    }
+
+    internal sealed class AppUpdateUiReady
+    {
+        private readonly Func<Task> send;
+        private bool sent;
+        private bool sending;
+
+        internal AppUpdateUiReady() : this(() => Task.Run(() => AppUpdateApi.UiReady())) { }
+        internal AppUpdateUiReady(Func<Task> send) { this.send = send; }
+
+        // Called on the UI thread after successful navigation. Failed signals can
+        // retry on the next successful navigation without delaying the main UI.
+        internal async Task NotifyAsync()
+        {
+            if (sent || sending) return;
+            sending = true;
+            try
+            {
+                await send();
+                sent = true;
+            }
+            catch (Exception error) { Hub.Log("desktop_ui_ready_deferred " + error.GetType().Name); }
+            finally { sending = false; }
         }
     }
 
@@ -194,7 +236,7 @@ namespace AIHub.Desktop
         private int requestSerial;
         private string inlineError;
         private readonly bool previewOnly;
-        internal event Action InstallRequested;
+        internal event Func<Task> InstallRequested;
 
         internal AppUpdateDialog() : this(false) { }
 
@@ -550,7 +592,7 @@ namespace AIHub.Desktop
             string state = Value(status, "state");
             if (state == "ready")
             {
-                if (InstallRequested != null) InstallRequested();
+                if (InstallRequested != null) await RunAction(() => InstallRequested());
                 return;
             }
             if (state == "available")
@@ -598,9 +640,11 @@ namespace AIHub.Desktop
                 var result = await Task.Run(() => AppUpdateApi.Status());
                 if (!IsDisposed && !working && serial == requestSerial)
                 {
-                    inlineError = null;
                     status = result;
-                    RenderStatus();
+                    // Polling must not erase an installation failure before it
+                    // can be read. An explicit successful action clears it.
+                    if (String.IsNullOrEmpty(inlineError)) RenderStatus();
+                    else UpdateButtons();
                 }
             }
             catch (Exception error)
@@ -643,7 +687,7 @@ namespace AIHub.Desktop
             string current = Value(status, "current_version");
             stateLabel.Text = StateText(state) + (String.IsNullOrEmpty(channel) ? "" : " · " + (channel == "candidate" ? "候选版" : channel));
             stateLabel.ForeColor = state == "failed" ? Coral : (state == "ready" || state == "succeeded" ? Mint : Ink);
-            currentVersionValue.Text = BreakVersion(String.IsNullOrEmpty(current) ? "2.13.2" : current);
+            currentVersionValue.Text = BreakVersion(String.IsNullOrEmpty(current) ? "2.13.10" : current);
             latestVersionValue.Text = BreakVersion(String.IsNullOrEmpty(latest) ? "—" : latest);
             currentVersionValue.Font = !String.IsNullOrEmpty(current) && current.Length > 18 ? LongVersionFont : VersionFont;
             latestVersionValue.Font = !String.IsNullOrEmpty(latest) && latest.Length > 18 ? LongVersionFont : VersionFont;
@@ -683,7 +727,7 @@ namespace AIHub.Desktop
             notes.Text = String.IsNullOrWhiteSpace(message)
                 ? "更新操作没有完成，请稍后重试。"
                 : "更新操作没有完成，详细信息如下：" + Environment.NewLine + Environment.NewLine + message;
-            progressLabel.Text = "可以重新检查，或在网络恢复后重试。";
+            progressLabel.Text = "请按上方原因处理，再重新检查或重试安装。";
             progressLine.Visible = false;
             UpdateButtons();
         }
@@ -714,7 +758,7 @@ namespace AIHub.Desktop
         {
             string state = Value(status, "state");
             bool stateBusy = state == "checking" || state == "downloading" || state == "prepared" || state == "applying";
-            bool busy = working || stateBusy;
+            bool busy = working || stateBusy || Boolean(status, "operation_active", false);
             bool tooLarge = state == "available" && Number(status, "bytes") > AutomaticDownloadLimit;
             actionButton.Enabled = !busy && !tooLarge;
             recheckLink.Enabled = !busy;

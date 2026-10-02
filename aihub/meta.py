@@ -26,7 +26,7 @@ DIR_TYPE_MAP = {
     "embeddings": "Embedding", "embedding": "Embedding",
     "upscale_models": "Upscaler", "upscaler": "Upscaler", "latent_upscale_models": "Upscaler",
     "sam2": "Vision", "sams": "Vision", "insightface": "Vision", "birefnet": "Vision",
-    "grounding-dino": "Vision", "florence2": "Vision",
+    "grounding-dino": "Vision", "florence2": "Vision", "vision": "Vision",
     "detection": "Detection", "detectors": "Detection",
     "llm": "LLM", "llms": "LLM", "language": "LLM",
     "tts": "TTS", "speech": "TTS", "audio": "TTS",
@@ -65,9 +65,34 @@ FAMILY_HINTS = [
 ]
 
 
-def classify_file(ext: str, parent_name: str):
+def bin_model_evidence(path, size=None, registered=False, manual=False):
+    """Conservative intake hints, not validation of weight contents or usability.
+
+    A generic binary suffix is insufficient. Explicit catalog/manual evidence is
+    retained, as are recognizable weight names and substantial files in known
+    model-role directories. Tiny sentinels and ordinary runtime/cache binaries
+    remain candidates. No pickle or model code is ever executed.
+    """
+    if manual:
+        return "manual"
+    if registered:
+        return "catalog"
+    if not size or size < 1024:
+        return "candidate"
+    name = re.split(r"[\\/]", str(path))[-1].casefold()
+    if re.match(r"^(?:pytorch_model(?:-\d+-of-\d+)?|diffusion_pytorch_model(?:-\d+-of-\d+)?|"
+                r"ip[-_]adapter[^/\\]*|clip-vit-[^/\\]*|campplus_[^/\\]*)\.bin$", name):
+        return "weight_name"
+    if size >= 1024 * 1024 and model_type(path):
+        return "model_directory"
+    return "candidate"
+
+
+def classify_file(ext: str, parent_name: str, path=None, size=None):
     """返回 (category, mtype)。"""
     e = ext.lower()
+    if e == ".bin" and bin_model_evidence(path or "", size) == "candidate":
+        return "other", None
     if e in MODEL_EXTS:
         t = DIR_TYPE_MAP.get(parent_name.lower())
         return "model", t or None

@@ -34,6 +34,14 @@ class SoftwareUpdateHTTPTests(test_service_control.ControlHTTPTests):
         self.assertEqual(self.request('/api/desktop/update/not-real', body=identity)[0], 404)
         self.manager.check.assert_not_called()
 
+    def test_ui_ready_requires_native_instance_authentication(self):
+        self.manager.ui_ready.return_value = {'state': 'idle', 'ui_ready': True}
+        route = '/api/desktop/update/ui_ready'
+        self.assertEqual(self.request(route, headers={'Sec-Fetch-Mode': 'cors'})[0], 403)
+        self.manager.ui_ready.assert_not_called()
+        self.assertEqual(self.request(route)[0], 200)
+        self.manager.ui_ready.assert_called_once_with()
+
     def test_error_details_are_not_disclosed_and_gate_is_released(self):
         for error, expected in ((ValueError('private path'),400),(RuntimeError('private token'),409),(OSError('secret'),500)):
             self.manager.check.side_effect = error

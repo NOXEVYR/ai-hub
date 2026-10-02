@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """后台任务管理：扫描 / 出图分析 / 更新检查。任务状态保存在内存。"""
 import threading
+import copy
 import json
 import time
 import traceback
@@ -84,7 +85,10 @@ def run_full_pipeline(db, cfg, do_images=True):
         db.set_meta("scan_file_count", str(result["file_count"]))
         if do_images:
             cb("出图分析中…")
-            images.run_image_scan(db, cfg, progress_cb=cb)
+            image_stats = images.run_image_scan(db, cfg, progress_cb=cb)
+            if image_stats.get("failed_roots"):
+                raise RuntimeError("图库扫描部分失败；未清理失败来源的历史图片与引用：" +
+                                   "；".join(image_stats["failed_roots"]))
         cb(f"完成：文件 {result['file_count']}，模型目录 {stats['catalog']}+{stats['filesystem']}")
 
     start("scan", target)
@@ -92,9 +96,34 @@ def run_full_pipeline(db, cfg, do_images=True):
 
 def run_update_check(db, cfg, scope="all", limit=0):
     """批量更新检查。scope: all | unchecked | pending"""
+    snapshot = copy.deepcopy(cfg)
+    selected_scope = scan.source_scope(snapshot)
+
+    def ensure_current():
+        keys = ('ai_root', 'workspace_managed', 'scan_roots', 'aliases', 'scan_exclude_paths', 'ignore_dirs')
+        if any(cfg.get(key) != snapshot.get(key) for key in keys) or scan.source_scope(cfg) != selected_scope:
+            raise ValueError('工作环境或模型来源已改变，停止旧范围的更新检查。')
+
+    class ScopedRows(list):
+        def __iter__(self):
+            for row in super().__iter__():
+                ensure_current()
+                yield row
+
+    class ScopedDB:
+        def __getattr__(self, name):
+            return getattr(db, name)
+
+        def upsert_model(self, row):
+            from . import organization
+            with organization.LOCK:
+                ensure_current()
+                return db.upsert_model(row)
 
     def target():
+        ensure_current()
         def cb(m):
+            ensure_current()
             progress("check-updates", m)
         if scope == "all":
             cond = "mtype IN ('Checkpoint','LoRA','Diffusion','VAE','ControlNet','Embedding','IPAdapter','TextEncoder')"
@@ -102,16 +131,20 @@ def run_update_check(db, cfg, scope="all", limit=0):
             cond = "update_state='unchecked'"
         else:
             cond = "update_state IN ('unchecked','error','unknown','maybe')"
-        sql = f"SELECT * FROM models WHERE {cond} AND missing=0 ORDER BY mtype, size DESC"
+        source_sql, source_args = selected_scope
+        sql = f"SELECT * FROM models WHERE {cond} AND missing=0 AND {source_sql} ORDER BY mtype, size DESC"
+        args = list(source_args)
         if limit:
-            sql += f" LIMIT {int(limit)}"
-        rows = db.query(sql)
+            sql += ' LIMIT ?'
+            args.append(max(0, int(limit)))
+        rows = ScopedRows(db.query(sql, args))
         cb(f"待检查 {len(rows)} 个模型…")
         if not rows:
             progress("check-updates", "没有需要检查的模型")
             return
-        ck = updater.Checker(db, cfg, progress_cb=cb)
+        ck = updater.Checker(ScopedDB(), snapshot, progress_cb=cb)
         summary = ck.check_many(rows)
+        ensure_current()
         db.set_meta("update_check_at", time.strftime("%Y-%m-%d %H:%M:%S"))
         progress("check-updates", f"完成：{json.dumps(summary, ensure_ascii=False)}")
 

@@ -174,7 +174,7 @@ test('escapes paths and mounts workspace through shared navigation before app lo
 
 test('tool capability rows report detection without inventing connection or launch support',()=>{
   const html=workspace.toolsHTML([{id:'codex',name:'Codex <test>',detected:true,available:false,launch_mode:'manual',rules_support:'AGENTS.md',enforcement:'soft',executable:null,notes:['需手动打开项目']}]);
-  for(const text of ['Codex &lt;test&gt;','已发现安装','入口不可用','manual','AGENTS.md','soft','未记录可执行入口','需手动打开项目'])assert(html.includes(text));
+  for(const text of ['Codex &lt;test&gt;','已发现安装','入口不可用','manual','AGENTS.md','约定规则（无系统隔离）','未记录可执行入口','需手动打开项目'])assert(html.includes(text));
   assert.doesNotMatch(html,/<button/);
   assert.match(workspace.toolsHTML(undefined),/尚无工具探测记录/);
   assert.match(workspace.toolsHTML([{id:'dsh'}]),/安装状态未确认/);
@@ -253,4 +253,35 @@ test('registered enabled tools default selected, empty selection is blocked, and
   assert(!unmanaged.requests.some(r=>r.url==='/api/workspace/project/preview'));
   await unmanaged.submit();unmanaged.key('confirm').checked=true;await unmanaged.key('apply').onclick();
   await unmanaged.projectSubmit();assert(unmanaged.requests.some(r=>r.url==='/api/workspace/project/preview'));
+});
+
+
+test('compact previews show relative children, keep root-external paths full and expand conflicts',()=>{
+  const plan={root:'D:/Studio',directories:[{path:'D:/Studio/20_Models',action:'create'},{path:'D:/Studio-old/outside',action:'keep'}],files:[{path:'D:\\Studio\\AGENTS.md',action:'conflict'}],warnings:['visible warning'],errors:['visible error'],sources:{scan_roots:['D:/Models'],output_roots:[]},source_health:[{kind:'scan',path:'D:/Models',status:'ok'}]};
+  const html=workspace.previewHTML(plan);assert.match(html,/title="D:\/Studio\/20_Models">20_Models/);assert.match(html,/>D:\/Studio-old\/outside</);assert.match(html,/<details class="ws-preview-details" open><summary>工作规则与登记文件 · 1 项 · 1 项冲突/);assert.match(html,/visible warning/);assert.match(html,/visible error/);assert.equal((html.match(/D:\/Models/g)||[]).length,1);assert.match(html,/确认并应用/);
+  const project=workspace.projectPreviewHTML(plan);assert.match(project,/任务交接与工具规则 · 1 项 · 1 项冲突/);assert.match(project,/确认创建项目工作区/);
+});
+
+
+test('workspace and project drafts retain reachable owners after the first workspace is applied',async()=>{
+  const old=globalThis.AIHubAppUpdate,events={},win={document:{addEventListener:(id,fn)=>events[id]=fn,getElementById:()=>null}};
+  require('../frontend/app-update.js').mount(win);globalThis.AIHubAppUpdate=win.AIHubAppUpdate;
+  try{
+    const h=harness({'/api/workspace/status':{...status(),root:'',configured:false,managed:false}}),query=h.el.querySelector;
+    h.el.querySelector=selector=>{const node=query(selector);node.dataset??={};return node;};await h.page(h.el);
+    const edit=(id,form)=>{const control=h.key(id);control.matches=()=>true;control.closest=selector=>selector==='[data-app-draft-scope]'?h.key(form):null;events.input({target:control});};
+    h.key('root').value='D:/Studio';edit('root','form');assert(win.aiHubHasUnsavedChanges());await h.submit();h.key('confirm').checked=true;await h.key('apply').onclick();assert(!win.aiHubHasUnsavedChanges());
+    assert.equal(h.key('project-form').dataset.appDraftScope,'workspace-project:D:/Studio');h.key('project-name').value='Film';edit('project-name','project-form');assert(win.aiHubHasUnsavedChanges());await h.projectSubmit();h.key('project-confirm').checked=true;await h.key('project-apply').onclick();
+    // The project is saved; adding its output is a separate workspace-source draft.
+    assert(win.aiHubHasUnsavedChanges());await h.submit();h.key('confirm').checked=true;await h.key('apply').onclick();assert(!win.aiHubHasUnsavedChanges());
+  }finally{if(old===undefined)delete globalThis.AIHubAppUpdate;else globalThis.AIHubAppUpdate=old;}
+});
+
+
+test('workspace tool labels translate known modes and keep unknown values without invented support',()=>{
+  const html=workspace.toolsHTML([{name:'Custom',launch_mode:'manual_handoff',rules_support:'AIHub handoff only',enforcement:'soft_rules_only'},{name:'CLI',launch_mode:'manual_cli'},{name:'Project',launch_mode:'manual_project'},{name:'Unknown',launch_mode:'future_native_mode',rules_support:'unverified_rule'}]);assert.match(html,/手动规则交接/);assert.match(html,/仅生成通用交接文件/);assert.match(html,/约定规则（无系统隔离）/);assert.match(html,/手动启动命令行工具/);assert.match(html,/在工具中手动打开项目/);assert.match(html,/future_native_mode/);assert.match(html,/unverified_rule/);assert.doesNotMatch(html,/manual_handoff|manual_cli|manual_project|soft_rules_only|AIHub handoff only/);
+});
+test('unconfigured workspace shows setup state while an unavailable configured root shows the fault',async()=>{
+  const fresh=harness({'/api/workspace/status':{...status(),configured:false,available:false,root:''}});await fresh.page(fresh.el);assert.match(fresh.el.innerHTML,/尚未选择工作区/);assert.doesNotMatch(fresh.el.innerHTML,/工作区尚不可访问，请检查路径/);
+  const unavailable=harness({'/api/workspace/status':{...status(),configured:true,available:false}});await unavailable.page(unavailable.el);assert.match(unavailable.el.innerHTML,/工作区尚不可访问，请检查路径/);
 });

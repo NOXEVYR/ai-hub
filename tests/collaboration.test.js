@@ -2,11 +2,31 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const ui=require('../frontend/collaboration.js');
+
+test('collaboration access opens only a fixed native request and makes no owner API call',async()=>{
+  let opened=0;
+  const h=harness({}, {openNativeExecutionAccess:()=>{opened++;return true;}});
+  await h.page(h.el);
+  const before=h.requests.length;
+  h.key('execution-access').onclick();
+  assert.equal(opened,1);assert.equal(h.requests.length,before);
+  assert.match(h.key('message').textContent,/请在该窗口完成配置/);
+  assert.match(h.el.innerHTML,/私有凭据/);assert.match(h.el.innerHTML,/co-execution-access/);
+});
+
+test('unavailable native access keeps the browser on a fixed safe guide',async()=>{
+  const h=harness({}, {openNativeExecutionAccess:()=>{throw new Error('private-credential-example');}});
+  await h.page(h.el);const before=h.requests.length;
+  h.key('execution-access').onclick();
+  assert.equal(h.requests.length,before);
+  assert.match(h.key('error').textContent,/浏览器页面不能创建或导出/);
+  assert.doesNotMatch(h.key('error').textContent,/private-credential/);
+});
 const status=()=>({root:'D:/Studio',available:true,protocol_version:1,tasks:[{id:'t1',title:'任务一',project:'Film',status:'queued',paths:{work:'D:/Studio/Film'}}],artifacts:[{id:'r1',task_id:'t1',kind:'report',title:'验收报告',path:'D:/Studio/report.md',status:'active',pinned:false}],memories:[],clients:[],policy:{enabled:true,days:7},integrations:['codex','zcode','workbuddy','dsh'].map(tool=>({tool,mcp_config:{mcpServers:{aihub:{args:['--tool',tool,'--client-id',tool+'-local']}}}}))});
-function harness(overrides={}) {
+function harness(overrides={},pageOptions={}) {
   const nodes=new Map(),requests=[],actionNodes=[],fields=[{disabled:false}],panels=['tasks','memories','sources','connect','retention'].map(id=>({dataset:{coPanel:id},hidden:false}));
   const tabs=panels.map(n=>({dataset:{coTab:n.dataset.coPanel},setAttribute(k,v){this[k]=v;}}));
-  const get=selector=>{if(!nodes.has(selector))nodes.set(selector,{id:selector.replace('#',''),type:selector==='#co-policy-enabled'?'checkbox':'text',value:({'#co-task-tool':'any','#co-memory-scope':'project','#co-source-tool':'any','#co-mcp-tool':'codex'})[selector] || '',checked:false,disabled:false,innerHTML:'',textContent:'',focus(){this.focused=true;}});return nodes.get(selector);};
+  const get=selector=>{if(!nodes.has(selector))nodes.set(selector,{id:selector.replace('#',''),type:selector==='#co-policy-enabled'?'checkbox':'text',value:({'#co-task-tool':'any','#co-memory-scope':'project','#co-source-tool':'any','#co-mcp-tool':'codex'})[selector] || '',checked:false,disabled:false,dataset:{},matches:()=>true,closest(s){if(s!=='[data-app-draft-scope]')return null;const match=this.id.match(/^co-(task|memory|source|policy)-/);return match?get('#co-'+match[1]+'-form'):null;},innerHTML:'',textContent:'',focus(){this.focused=true;}});return nodes.get(selector);};
   const el={isConnected:true,dataset:{},innerHTML:'',classList:{add(){}},querySelector:get,querySelectorAll(s){
     if(s==='[data-co-panel]')return panels;
     if(s==='[data-co-tab]')return tabs;
@@ -16,7 +36,7 @@ function harness(overrides={}) {
     return [];
   }};
   const api=async(url,opts)=>{requests.push({url,body:opts?.body});const val=Object.hasOwn(overrides,url)?overrides[url]:url==='/api/harnesses'?{root:'D:/Studio',items:['codex','zcode','workbuddy','dsh'].map(id=>({id,name:id,enabled:true,connection_mode:'mcp_stdio'}))}:url.startsWith('/api/harnesses/config?')?{config:{mcpServers:{aihub:{args:['--client-id',new URLSearchParams(url.split('?')[1]).get('client_id')]}}}}:url.endsWith('/status')?status():{items:[]};return typeof val==='function'?val(opts?.body):val;};
-  const page=ui.createPage({api,heading:()=>''});
+  const page=ui.createPage({api,heading:()=>'',...pageOptions});
   return {el,page,key:id=>get('#co-'+id),requests,tabs,panels,fields,actions:actionNodes,submit:id=>get('#co-'+id+'-form').onsubmit({preventDefault(){}})};
 }
 
@@ -30,17 +50,43 @@ test('untrusted file names, memory content, JSON and errors are escaped in every
 test('initial state reads only, exposes controlled cleanup boundary and source-specific MCP identities',async()=>{
   const h=harness();await h.page(h.el);
   assert.equal(h.key('policy-enabled').checked,true);assert.equal(h.key('policy-days').value,'7');
-  assert(h.requests.every(r=>r.url.endsWith('/status') || r.url.endsWith('/source_list') || r.url==='/api/harnesses'));
+  assert(h.requests.every(r=>r.url.endsWith('/status') || r.url.endsWith('/source_list') || r.url==='/api/harnesses' || (r.url.startsWith('/api/collaboration/report_delivery_status?') && !r.body)));
   assert.match(h.el.innerHTML,/只影响新登记/);assert.match(h.el.innerHTML,/回收失败保留/);assert.match(h.el.innerHTML,/各工具原生记忆不会被读取或修改/);
   h.el.querySelector('#hc-config-tool').value='workbuddy';h.el.querySelector('#hc-config-tool').onchange();await h.el.querySelector('#hc-config-load').onclick();
   assert.match(h.el.querySelector('#hc-config-result').innerHTML,/workbuddy-local/);assert(!h.el.querySelector('#hc-config-result').innerHTML.includes('codex-local'));
+});
+
+test('deferred report checks only the selected task and keeps the prior evidence on failure',async()=>{
+  const current=status();current.tasks[0].report_submission={status:'deferred',policy:'required'};
+  let fail=false;
+  const h=harness({'/api/collaboration/status':current,'/api/collaboration/task_list':body=>{
+    assert.deepEqual(body,{task_id:'t1',_workspace_root:'D:/Studio'});
+    if(fail)throw new Error('服务不可用');
+    return {items:[{...current.tasks[0],report_submission:{status:'submitted',policy:'required'}}]};
+  }});
+  h.actions.push({dataset:{coAction:'report-check',coId:'t1'}});await h.page(h.el);
+  assert.match(h.key('tasks').innerHTML,/核验此任务/);
+  fail=true;await h.actions[0].onclick();assert.match(h.key('tasks').innerHTML,/报告待核验/);
+  fail=false;await h.actions[0].onclick();assert.match(h.key('tasks').innerHTML,/报告已登记/);
+  assert.doesNotMatch(h.key('tasks').innerHTML,/核验此任务/);
+  assert.equal(h.requests.filter(r=>r.url.endsWith('/status')).length,1);
+});
+
+test('leaving the page while a report check is pending does not apply its late result',async()=>{
+  const current=status();current.tasks[0].report_submission={status:'deferred',policy:'required'};
+  let resolve;
+  const h=harness({'/api/collaboration/status':current,'/api/collaboration/task_list':()=>new Promise(yes=>resolve=yes)});
+  h.actions.push({dataset:{coAction:'report-check',coId:'t1'}});await h.page(h.el);
+  const html=h.key('tasks').innerHTML,pending=h.actions[0].onclick();h.el.isConnected=false;
+  resolve({items:[{...current.tasks[0],report_submission:{status:'submitted',policy:'required'}}]});
+  await pending;assert.equal(h.key('tasks').innerHTML,html);
 });
 
 test('task submission sends contract payload; failures preserve all draft fields',async()=>{
   let fail=true;const h=harness({'/api/collaboration/task_create':body=>{if(fail)throw new Error('项目路径被拒绝');return {id:'new',...body};}});
   await h.page(h.el);h.key('task-project').value='Film';h.key('task-title').value='验收';h.key('task-description').value='重要说明';h.key('task-tool').value='dsh';
   await h.submit('task');assert.equal(h.key('task-title').value,'验收');assert.match(h.key('error').textContent,/路径被拒绝/);assert.equal(h.fields[0].disabled,false);
-  assert.deepEqual(h.requests.find(r=>r.url.endsWith('task_create')).body,{project:'Film',title:'验收',description:'重要说明',target_tool:'dsh',_workspace_root:'D:/Studio'});
+  assert.deepEqual(h.requests.find(r=>r.url.endsWith('task_create')).body,{project:'Film',title:'验收',description:'重要说明',target_tool:'dsh',report_policy:'required',_workspace_root:'D:/Studio'});
   fail=false;await h.submit('task');assert.equal(h.key('task-title').value,'');assert.equal(h.key('task-project').value,'Film');
 });
 
@@ -49,7 +95,7 @@ test('tab switching and navigation snapshot preserve unsaved memory, source and 
   h.tabs.find(t=>t.dataset.coTab==='memories').onclick();assert.equal(h.key('memory-content').value,'未提交的长期约定');assert.equal(h.panels.find(p=>p.dataset.coPanel==='tasks').hidden,true);
   const saved=ui.capture(h.el),next=harness();await next.page(next.el,null,saved);
   assert.equal(next.el.dataset.coTab,'memories');assert.equal(next.key('memory-content').value,'未提交的长期约定');assert.equal(next.key('source-path').value,'D:/Reports');assert.equal(next.key('policy-days').value,'21');assert.equal(next.key('policy-enabled').checked,false);
-  assert.equal(next.requests.length,3);
+  assert.equal(next.requests.length,4);
 });
 
 test('detached async responses never clear drafts or modify stale page',async()=>{
@@ -139,4 +185,55 @@ test('persisted source scan completeness and document counts remain visible afte
     assert.equal(html.includes('未完整（达到扫描预算或部分不可读）'),Boolean(truncated));
     assert.equal(html.includes('已完成本次盘点'),!truncated);
   }
+});
+
+
+test('retention preview can continue beyond protected rows and recycles only visible IDs',async()=>{
+  const h=harness({'/api/collaboration/retention_preview':body=>body.offset===0?{items:[],protected:[],truncated:true,next_offset:1000}:{items:[{id:'later',path:'D:/Temp/later.md'}],next_offset:null},'/api/collaboration/retention_run':{checked:1,recycled:0,items:[]}});
+  await h.page(h.el);await h.key('preview').onclick();
+  assert.equal(h.key('run').disabled,true);
+  assert.match(h.key('preview-results').innerHTML,/尚未检查全部/);
+  assert.equal(h.key('preview').textContent,'继续预览下一批');
+  await h.key('preview').onclick();assert.equal(h.key('run').disabled,false);
+  await h.key('run').onclick();
+  assert.deepEqual(h.requests.find(r=>r.url.endsWith('retention_run')).body.artifact_ids,['later']);
+  assert.equal(h.key('preview').textContent,'预览待回收文件');
+});
+
+
+test('memory/task/source drafts block installation, failed saves retain them and submitted revisions clear independently',async()=>{
+  const old=globalThis.AIHubAppUpdate,events={},win={document:{addEventListener:(id,fn)=>events[id]=fn,getElementById:()=>null}};
+  require('../frontend/app-update.js').mount(win);globalThis.AIHubAppUpdate=win.AIHubAppUpdate;
+  try{
+    let fail=true;const h=harness({'/api/collaboration/memory_propose':()=>{if(fail)throw Error('offline');return{id:'memory'};}});await h.page(h.el);
+    h.key('search-project').value='filter';events.input({target:h.key('search-project')});assert(!win.aiHubHasUnsavedChanges());
+    for(const [id,value]of [['memory-title','meaning'],['memory-project','Film'],['memory-content','unsaved text'],['memory-source','r1']]){h.key(id).value=value;events.input({target:h.key(id)});}
+    assert(win.aiHubHasUnsavedChanges());await h.submit('memory');assert(win.aiHubHasUnsavedChanges());assert.equal(h.key('memory-content').value,'unsaved text');
+    h.key('task-title').value='task draft';events.input({target:h.key('task-title')});fail=false;await h.submit('memory');assert(win.aiHubHasUnsavedChanges());await h.submit('task');assert(!win.aiHubHasUnsavedChanges());
+    h.key('source-path').value='D:/Reports';events.input({target:h.key('source-path')});h.key('source-label').value='Reports';await h.submit('source');assert(!win.aiHubHasUnsavedChanges());
+  }finally{if(old===undefined)delete globalThis.AIHubAppUpdate;else globalThis.AIHubAppUpdate=old;}
+});
+test('memory save in flight preserves newer input and its install protection',async()=>{
+  const old=globalThis.AIHubAppUpdate,events={},win={document:{addEventListener:(id,fn)=>events[id]=fn,getElementById:()=>null}};
+  require('../frontend/app-update.js').mount(win);globalThis.AIHubAppUpdate=win.AIHubAppUpdate;
+  try{
+    let resolve;const h=harness({'/api/collaboration/memory_propose':()=>new Promise(yes=>resolve=yes)});await h.page(h.el);
+    h.key('memory-project').value='Film';h.key('memory-content').value='submitted';events.input({target:h.key('memory-content')});const pending=h.submit('memory');
+    h.key('memory-content').value='newer';events.input({target:h.key('memory-content')});resolve({id:'memory'});await pending;assert.equal(h.key('memory-content').value,'newer');assert(win.aiHubHasUnsavedChanges());
+  }finally{if(old===undefined)delete globalThis.AIHubAppUpdate;else globalThis.AIHubAppUpdate=old;}
+});
+test('source directory reconfirmation requires a preview and an explicit checked confirmation',async()=>{
+  const h=harness({'/api/collaboration/source_reconfirm_preview':{token:'identity-token',source_id:'source',path:'D:/Reports',previous_identity:{file_id:'old'},current_identity:{file_id:'new'},retained_inventory_count:4,can_apply:true},'/api/collaboration/source_reconfirm_apply':{applied:true,history_retained:true}});await h.page(h.el);
+  const action={dataset:{coAction:'source-reconfirm',coId:'source'}};h.actions.push(action);await h.key('refresh').onclick();await action.onclick();
+  assert.match(h.key('source-confirm').innerHTML,/旧目录身份/);assert.match(h.key('source-confirm').innerHTML,/保留 4 条/);await h.key('source-confirm-apply').onclick();assert(!h.requests.some(r=>r.url.endsWith('/source_reconfirm_apply')));
+  h.key('source-confirm-check').checked=true;h.key('source-confirm-check').onchange();await h.key('source-confirm-apply').onclick();assert.deepEqual(h.requests.find(r=>r.url.endsWith('/source_reconfirm_apply')).body,{token:'identity-token',_workspace_root:'D:/Studio'});assert.equal(h.key('source-confirm').innerHTML,'');
+});
+test('canceling source reconfirmation invalidates late previews and apply failures keep visible evidence',async()=>{
+  let resolve;const h=harness({'/api/collaboration/source_reconfirm_preview':()=>new Promise(yes=>resolve=yes)});await h.page(h.el);const action={dataset:{coAction:'source-reconfirm',coId:'source'}};h.actions.push(action);await h.key('refresh').onclick();const pending=action.onclick();h.key('source-confirm-cancel').onclick();resolve({token:'late',can_apply:true});await pending;assert.equal(h.key('source-confirm').innerHTML,'');assert(!h.requests.some(r=>r.url.endsWith('/source_reconfirm_apply')));
+  const failed=harness({'/api/collaboration/source_reconfirm_preview':{token:'preview',can_apply:true},'/api/collaboration/source_reconfirm_apply':()=>{throw Error('identity changed again');}});await failed.page(failed.el);const next={dataset:{coAction:'source-reconfirm',coId:'source'}};failed.actions.push(next);await failed.key('refresh').onclick();await next.onclick();failed.key('source-confirm-check').checked=true;await failed.key('source-confirm-apply').onclick();assert.match(failed.key('error').textContent,/identity changed again/);assert.match(failed.key('source-confirm').innerHTML,/确认目录身份/);
+});
+
+
+test('generic report source has a readable Chinese tool label',()=>{
+  const html=ui.sourcesHTML([{id:'source',path:'D:/Reports',tool:'any'}]);assert.match(html,/<td>通用来源<\/td>/);assert.doesNotMatch(html,/<td>any<\/td>/);
 });

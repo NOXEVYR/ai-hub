@@ -178,9 +178,11 @@ class Startup(Fixture):
             spawn.assert_not_called()
 
 
-    def test_new_service_uses_no_window_and_writes_pid(self):
+    def test_new_service_uses_no_window_and_leaves_pid_to_service(self):
         kernel = mock.Mock()
         proc = mock.Mock(pid=1234)
+        pid_path = self.folder / 'server.pid.json'
+        pid_path.write_text('{"source":"server.py","instance_id":"owned-by-service"}')
         with mock.patch.object(launcher, "ROOT", self.folder), mock.patch.object(launcher, "DATA", self.folder), \
              mock.patch.object(launcher, "health", side_effect=[None, None, {"app": "ai-hub"}]), \
              mock.patch.object(launcher, "port_busy", return_value=False), \
@@ -189,7 +191,7 @@ class Startup(Fixture):
             result = launcher.ensure_running(8888)
             self.assertEqual(result["status"], "started")
             self.assertTrue(spawn.call_args.kwargs["creationflags"] & launcher.subprocess.CREATE_NO_WINDOW)
-            self.assertEqual(json.loads((self.folder / "server.pid.json").read_text())["pid"], 1234)
+            self.assertEqual(json.loads(pid_path.read_text())["instance_id"], 'owned-by-service')
             kernel.ReleaseMutex.assert_called_once_with(9)
 
     def test_busy_port_does_not_spawn_or_terminate_another_service(self):

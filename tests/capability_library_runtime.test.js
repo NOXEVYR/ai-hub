@@ -44,7 +44,9 @@ class FakeElement {
     visit(this);
     return result;
   }
+  closest(selector) {for(let node=this;node;node=node.parentElement)if(node.matches(selector))return node;return null;}
   matches(selector) {
+    if(selector.includes(','))return selector.split(',').some(part=>this.matches(part.trim()));
     if (selector.startsWith('#')) return this.id === selector.slice(1);
     if (selector.startsWith('[') && selector.endsWith(']')) {
       const attribute = selector.slice(1, -1).split('=')[0];
@@ -60,6 +62,11 @@ class FakeElement {
     this._innerHTML = String(value);
     if (this.id === 'library-source-editor') this.#readSourceRows(this._innerHTML);
     else if (this.id === 'library-tool') this.value = '';
+    else if (this.id === 'library-list') {
+      this.children=[];
+      for(const match of this._innerHTML.matchAll(/data-library-source-copy="([^"]*)"/g))
+        this.appendChild(new FakeElement('button',{dataset:{librarySourceCopy:decodeHtml(match[1])}}));
+    }
   }
   get innerHTML() { return this._innerHTML || ''; }
   #readSourceRows(markup) {
@@ -169,9 +176,23 @@ function editSourceRow(row, {tool, kind = 'skills_root', path}) {
   return {toolInput, kindSelect, pathInput};
 }
 
-function makeLibrary({api, taskUI = taskHarness().taskUI, heading = () => '<header>能力中心</header>'}) {
-  return library.createPage({api, heading, taskUI});
+function makeLibrary({api, taskUI = taskHarness().taskUI, heading = () => '<header>能力中心</header>',copyPath}) {
+  return library.createPage({api, heading, taskUI,copyPath});
 }
+
+test('interface details distinguish manifest operations and copy their source without skill positioning',async()=>{
+  const copies=[],calls=[],records=[{name:'相同接口',source:'explicit_local_capability_manifest',source_path:'D:/A/.capabilities.json',operation_id:'generate-a',domains:['image']},{name:'相同接口',source:'explicit_local_capability_manifest',source_path:'E:/B/<声明>.capabilities.json',operation_id:'<generate-b>',domains:['image']}];
+  const page=makeLibrary({api:async url=>{calls.push(url);return{...inventory(),interfaces:records};},copyPath:async value=>copies.push(value)}),el=makePage();await page(el);await el.querySelector('#library-tab-interfaces').click();
+  const html=el.querySelector('#library-list').innerHTML;assert.match(html,/generate-a/);assert.match(html,/&lt;generate-b&gt;/);assert.match(html,/D:\/A\/.capabilities.json/);assert.match(html,/E:\/B\/&lt;声明&gt;.capabilities.json/);
+  assert(!html.includes('data-skill-path'));assert(!html.includes('data-context-path'));
+  const buttons=el.querySelector('#library-list').querySelectorAll('[data-library-source-copy]');assert.equal(buttons.length,2);await buttons[1].click();assert.deepEqual(copies,[records[1].source_path]);assert.deepEqual(calls,['/api/capabilities/discover']);
+});
+
+test('first discovery failure preserves the cause and offers retry without requiring a workspace',async()=>{
+  let failing=true;const page=makeLibrary({api:async()=>{if(failing)throw Error('合成发现失败');return{...inventory(),root:'',workspace_root:''};}}),el=makePage();await page(el);
+  const error=el.querySelector('#library-error').textContent;assert.match(error,/合成发现失败/);assert.match(error,/重试发现/);assert.match(error,/不要求先创建工作区/);assert(!error.includes('请先在工作环境'));
+  assert.equal(el.querySelector('#library-refresh').disabled,false);failing=false;await el.querySelector('#library-refresh').click();assert.match(el.querySelector('#library-list').innerHTML,/video-codex-skill/);assert.equal(el.dataset.libraryRoot,'');
+});
 
 test('initial view auto-discovers read-only and never dispatches a task', async () => {
   const calls = [], tasks = taskHarness();
@@ -388,3 +409,33 @@ test('an initially empty workspace root remains an explicit source owner after a
   assert.equal(posted.revision, 'revision-B');
   assert.equal(draft.pathInput.value, 'C:\\agents\\skills');
 });
+
+
+async function withRealDraftGuard(run) {
+  const previous=globalThis.AIHubAppUpdate,events={},win={document:{addEventListener:(name,fn)=>events[name]=fn,getElementById:()=>null}};
+  require('../frontend/app-update.js').mount(win);globalThis.AIHubAppUpdate=win.AIHubAppUpdate;
+  try {await run({win,input:target=>events.input({target})});}
+  finally {if(previous===undefined)delete globalThis.AIHubAppUpdate;else globalThis.AIHubAppUpdate=previous;}
+}
+test('successful source save clears the submitted guard after navigation without updating detached DOM',async()=>withRealDraftGuard(async({win,input})=>{
+  let resolve;const page=makeLibrary({api:async url=>url.endsWith('/sources')?new Promise(yes=>resolve=yes):inventory()});const el=makePage();await page(el);
+  await el.querySelector('#library-source-add').click();const row=el.querySelector('[data-source-row]'),controls=editSourceRow(row,{tool:'worker',path:'D:/Skills'});input(controls.pathInput);assert(win.aiHubHasUnsavedChanges());
+  const result=el.querySelector('#library-source-result'),message=result.textContent,pending=el.querySelector('#library-source-save').click();el.isConnected=false;
+  resolve({saved:true,sources_revision:'revision-2',configured_sources:[{tool:'worker',kind:'skills_root',path:'D:/Skills'}]});await pending;
+  assert(!win.aiHubHasUnsavedChanges());assert.equal(result.textContent,message);
+}));
+test('detached source save retains a later revision and a failed save never clears protection',async()=>withRealDraftGuard(async({win,input})=>{
+  let resolve;const page=makeLibrary({api:async url=>url.endsWith('/sources')?new Promise(yes=>resolve=yes):inventory()});const el=makePage();await page(el);
+  await el.querySelector('#library-source-add').click();const row=el.querySelector('[data-source-row]'),controls=editSourceRow(row,{tool:'worker',path:'D:/Submitted'});input(controls.pathInput);
+  const pending=el.querySelector('#library-source-save').click();controls.pathInput.value='D:/Newer';controls.pathInput.input();input(controls.pathInput);const snapshot=library.capture(el,taskHarness().taskUI);el.isConnected=false;
+  resolve({saved:true,sources_revision:'revision-2',configured_sources:[]});await pending;assert(win.aiHubHasUnsavedChanges());
+  let fail=true;const next=makePage(),requests=[];const nextPage=makeLibrary({api:async(url,options)=>{requests.push({url,body:options?.body});if(url.endsWith('/sources')){if(fail)throw Error('offline');return{saved:true,sources_revision:'revision-3',configured_sources:[]};}return inventory();}});await nextPage(next,new URLSearchParams(),snapshot);
+  assert.equal(next.querySelector('[data-source-path]').value,'D:/Newer');await next.querySelector('#library-source-save').click();assert(win.aiHubHasUnsavedChanges());assert.match(next.querySelector('#library-source-result').textContent,/offline/);
+  fail=false;await next.querySelector('#library-source-save').click();assert(!win.aiHubHasUnsavedChanges());assert.equal(requests.find(r=>r.url.endsWith('/sources')).body._workspace_root,inventory().root);
+}));
+test('first slow discovery disables source mutation until its workspace owner is confirmed',async()=>withRealDraftGuard(async({win,input})=>{
+  let resolve;const requests=[];let first=true;const page=makeLibrary({api:async(url,options)=>{requests.push({url,body:options?.body});if(url.endsWith('/sources'))return{saved:true,sources_revision:'revision-2',configured_sources:[]};if(first){first=false;return new Promise(yes=>resolve=yes);}return inventory();}});const el=makePage(),loading=page(el);
+  assert(el.querySelector('#library-source-add').disabled);assert(el.querySelector('#library-source-save').disabled);await el.querySelector('#library-source-add').click();await el.querySelector('#library-source-save').click();assert(!el.querySelector('[data-source-row]'));assert(!win.aiHubHasUnsavedChanges());assert(!requests.some(r=>r.url.endsWith('/sources')));
+  resolve(inventory());await loading;assert(!el.querySelector('#library-source-add').disabled);await el.querySelector('#library-source-add').click();const controls=editSourceRow(el.querySelector('[data-source-row]'),{tool:'worker',path:'D:/OwnedSkills'});input(controls.pathInput);
+  const snapshot=library.capture(el,taskHarness().taskUI);assert.equal(snapshot.root,inventory().root);assert.equal(snapshot.sourceDraft[0].path,'D:/OwnedSkills');await el.querySelector('#library-source-save').click();assert.equal(requests.find(r=>r.url.endsWith('/sources')).body._workspace_root,inventory().root);assert(!win.aiHubHasUnsavedChanges());
+}));

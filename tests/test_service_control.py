@@ -184,7 +184,7 @@ class ControlHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(value['service_instance_id'], self.control.record['instance_id'])
         self.assertEqual(value['control_protocol'], service_control.PROTOCOL)
-        self.assertEqual(value['desktop_shell_version'], '2.13.2')
+        self.assertEqual(value['desktop_shell_version'], '2.13.10')
         self.assertNotIn('token', value)
 
     def test_accepted_stop_refuses_new_http_work(self):
@@ -210,6 +210,7 @@ class ControlHTTPTests(unittest.TestCase):
                 status, value = self.request()
                 self.assertEqual(status, 409)
                 self.assertEqual(value['code'], 'service_busy')
+                self.assertEqual(value['error'], '本机仍有扫描、更新或数据操作正在执行，请稍后重试退出。')
                 self.assertFalse(self.gate.stopping)
             finally:
                 released.set()

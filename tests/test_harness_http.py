@@ -55,7 +55,7 @@ class HarnessHTTP(unittest.TestCase):
     def test_active_owner_blocks_disable_and_cached_client_is_denied_after_finish(self):
         self.register()
         self.heartbeat()
-        task = self.call('task_create', {'project': 'Project', 'title': 'Owned', 'target_tool': 'studio-cli'})
+        task = self.call('task_create', {'project': 'Project', 'title': 'Owned', 'target_tool': 'studio-cli', 'report_policy': 'optional'})
         claim = self.call('task_claim', {'task_id': task['id'], 'client_id': 'studio-cli-client'}, True)
         disable = {'id': 'studio-cli', 'revision': 1, 'enabled': False, '_workspace_root': str(self.root)}
         self.assertEqual(self.request('/api/harnesses/save', disable)[0], 409)

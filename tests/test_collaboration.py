@@ -37,7 +37,8 @@ class CollaborationTests(unittest.TestCase):
         return self.call('client_heartbeat', client_id=client, tool=tool, name=client, protocol_version=1)
 
     def task(self, claim=True):
-        task = self.call('task_create', project='Project', title='任务', description='untrusted text', target_tool='any')
+        # These queue/file/recycling fixtures intentionally have no completion report.
+        task = self.call('task_create', project='Project', title='任务', description='untrusted text', target_tool='any', report_policy='optional')
         if claim:
             claim = self.call('task_claim', task_id=task['id'], client_id='one')
             self.lease = dict(task_id=task['id'], client_id='one', lease_token=claim['lease_token'])
@@ -346,6 +347,34 @@ class CollaborationTests(unittest.TestCase):
         self.assertNotIn('inode', preview['items'][0])
         self.assertEqual(before, self.call('artifact_list'))
         self.assertTrue(Path(good['path']).exists())
+
+    def test_preview_continues_past_a_full_page_of_invalid_registrations(self):
+        self.task()
+        good = self.artifact('temp', 'good.md')
+        self.call('task_finish', **self.lease)
+        future = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=9)
+        with c.store(self.cfg) as (con, root):
+            template = dict(con.execute('SELECT * FROM artifacts WHERE id=?', (good['id'],)).fetchone())
+            columns = list(template)
+            entries = []
+            for index in range(1000):
+                row = dict(template, id='invalid-%04d' % index,
+                           path=str(Path(good['path']).parent / ('missing-%04d.md' % index)),
+                           path_key='invalid-path-%04d' % index, expires_at='2000-01-01T00:00:00Z')
+                entries.append(tuple(row[key] for key in columns))
+            con.executemany('INSERT INTO artifacts (' + ','.join(columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')', entries)
+        first = c.retention_preview(self.cfg, future)
+        self.assertEqual(first['items'], [])
+        self.assertEqual(len(first['protected']), 1000)
+        self.assertTrue(first['truncated'])
+        second = c.retention_preview(self.cfg, future, offset=first['next_offset'])
+        self.assertEqual([row['id'] for row in second['items']], [good['id']])
+        self.assertFalse(second['truncated'])
+        self.assertIsNone(second['next_offset'])
+        self.assertTrue(Path(good['path']).exists())
+        for value in (-1, True, '1000', 1.5):
+            with self.subTest(offset=value), self.assertRaises(ValueError):
+                c.retention_preview(self.cfg, future, offset=value)
 
     def test_retention_pagination_and_count(self):
         self.task()

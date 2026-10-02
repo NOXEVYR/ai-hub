@@ -16,7 +16,7 @@ function pageHarness(start, end, exports) {
     pages: {}, URLSearchParams, Object, Set, Number,
     $: node, $$: () => [], esc: value => String(value ?? ''),
     heading: () => '', icon: () => '', empty: () => '', pager: () => ({}),
-    bindModelLinks() {}, favorites: new Set(), scopes: {},
+    bindModelLinks() {}, favorites: new Set(), scopes: {},AIHubMedia:{tabs:()=>''},
     debounce: fn => { delayed.push(fn); return () => {}; },
     api: async url => {
       requests.push(url);
@@ -76,8 +76,8 @@ test('a model request finishing after close/navigation cannot reopen its drawer'
     openDrawer: html => opened.push(html),
     $: () => ({}), esc: value => String(value),
   };
-  const drawerSource = source.slice(source.indexOf('  async function openModelDrawer('), source.indexOf('  // ================= 更新中心'));
-  vm.runInNewContext('let activeDrawerId = null, drawerRequest = 0;\n' + drawerSource +
+  const drawerSource = source.slice(source.indexOf('  // ---------- 模型详情抽屉 ----------'), source.indexOf('  // ================= 更新中心'));
+  vm.runInNewContext('let activeDrawerId = null, activeDrawerPath = null, drawerRequest = 0;\n' + drawerSource +
     '\nthis.open = openModelDrawer; this.close = () => { activeDrawerId = null; drawerRequest++; };', context);
   const first = context.open(1); context.close(); resolve({}); await first;
   assert.equal(opened.length, 1);

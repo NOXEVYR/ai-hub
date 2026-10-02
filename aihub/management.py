@@ -2,6 +2,7 @@
 import collections
 import json
 import os
+import re
 from pathlib import Path
 import threading
 from . import config, registry
@@ -124,13 +125,21 @@ def _text_entry(path, folder, title=None, group='资料'):
         return None
 
 
-def _project_dirs(folder):
+def _project_dirs(folder, diagnostics=None):
     try:
+        if not folder.exists():
+            return []
         registry._ancestors(folder)
-        return [path for path in sorted(folder.iterdir()) if path.is_dir() and not path.name.startswith(('.', '_'))
+        entries = [path for path in sorted(folder.iterdir()) if path.is_dir() and not path.name.startswith('.')
+                and (not path.name.startswith('_') or re.match(r'^_template(?:[_ -]|$)', path.name.casefold()))
                 and path.name.casefold() not in registry.BLOCKED
-                and not path.is_symlink() and not getattr(path.lstat(), 'st_file_attributes', 0) & 0x400][:500]
+                and not path.is_symlink() and not getattr(path.lstat(), 'st_file_attributes', 0) & 0x400]
+        if diagnostics is not None and len(entries) > 500:
+            diagnostics.setdefault('partial_locations', []).append({'path': str(folder), 'reason': 'project_limit', 'limit': 500})
+        return entries[:500]
     except (OSError, ValueError):
+        if diagnostics is not None:
+            diagnostics.setdefault('unavailable_locations', []).append({'path': str(folder), 'reason': 'directory_unavailable'})
         return []
 
 
@@ -148,8 +157,9 @@ def projects(cfg):
     records = catalog(cfg).get('models', [])
     registered = {registry._key(p.get('root', '')): p for p in document['projects']}
     discovered = {}
+    diagnostics = {'partial_locations': [], 'unavailable_locations': []}
     for folder, kind in ((ai_root / '40_Projects', 'creative'), (ai_root / '50_Training/Projects', 'training'), (ai_root / '10_Apps', 'tool')):
-        for path in _project_dirs(folder):
+        for path in _project_dirs(folder, diagnostics):
             doc_names = ('项目说明.md', 'README_项目.md', 'PROJECT.md')
             if kind != 'tool':
                 doc_names += ('README_训练项目.md', 'README.md')
@@ -204,6 +214,7 @@ def projects(cfg):
         items.append(item)
     items.sort(key=lambda item: (item['type'], item['name'].casefold()))
     return {'items': items, 'templates': registry.TEMPLATES, 'warnings': document.get('warnings', []),
+            'discovery': {'partial': bool(diagnostics['partial_locations'] or diagnostics['unavailable_locations']), **diagnostics},
             'coverage': '创作、训练和有项目说明的工具目录；未登记项不推断进度，登记只映射现有结构。'}
 
 
@@ -276,12 +287,12 @@ def generated_report_dir(cfg, legacy_dir):
     return destination
 
 
-def reports(cfg, generated_dir):
+def reports(cfg, generated_dir, diagnostics=None):
     base = root(cfg)
     locations = [(base, '工作入口'), (base / 'Reports', '模型与 LoRA'), (Path(generated_dir), '终端生成报告'),
                  (generated_report_dir(cfg, generated_dir), '工作环境 · 终端生成报告'),
                  (base.parent / '80_Knowledge/Guides', '知识 · 指南')]
-    locations += [(path, '项目 · ' + path.name) for path in _project_dirs(base / 'Projects')]
+    locations += [(path, '项目 · ' + path.name) for path in _project_dirs(base / 'Projects', diagnostics)]
     result = {}
     def add(entry):
         if entry:
@@ -289,33 +300,51 @@ def reports(cfg, generated_dir):
     for folder, group in locations:
         try:
             registry._ancestors(folder)
-            for path in list(folder.iterdir())[:1000] if folder.is_dir() else []:
+            entries = list(folder.iterdir()) if folder.is_dir() else []
+            if diagnostics is not None and len(entries) > 1000:
+                diagnostics.setdefault('partial_locations', []).append({'path': str(folder), 'reason': 'report_limit', 'limit': 1000})
+            for path in entries[:1000]:
                 add(_text_entry(path, folder, group=group))
         except (ValueError, OSError):
+            if diagnostics is not None:
+                diagnostics.setdefault('unavailable_locations', []).append({'path': str(folder), 'reason': 'directory_unavailable'})
             continue
-    for project in projects(cfg)['items']:
+    project_catalog = projects(cfg)
+    if diagnostics is not None:
+        diagnostics.setdefault('warnings', []).extend(project_catalog.get('warnings', []))
+        discovery = project_catalog.get('discovery', {})
+        for key in ('partial_locations', 'unavailable_locations'):
+            diagnostics.setdefault(key, []).extend(discovery.get(key, []))
+    for project in project_catalog['items']:
         if project['report']:
             # Current project documentation takes precedence over legacy specialist reports.
             folder = Path(project['root']) if registry._within(project['report'], project['root']) else base / 'Projects' / Path(project['root']).name
             add(_text_entry(project['report'], folder, title=project['name'] + ' · 项目说明', group='项目说明'))
     knowledge = base.parent / '80_Knowledge'
     document = _registry(cfg)
+    if diagnostics is not None:
+        diagnostics.setdefault('warnings', []).extend(document.get('warnings', []))
     explicit = list(document['knowledge'])
     try:
         manifest_path = knowledge / 'manifest.json'
         raw = registry._raw(manifest_path)
         manifest = json.loads(raw.decode('utf-8-sig')) if raw else {}
         rows = manifest.get('documents', []) if isinstance(manifest, dict) else []
+        if diagnostics is not None and isinstance(rows, list) and len(rows) > 500:
+            diagnostics.setdefault('partial_locations', []).append({'path': str(manifest_path), 'reason': 'knowledge_limit', 'limit': 500})
         for row in rows[:500] if isinstance(rows, list) else []:
             if isinstance(row, dict) and isinstance(row.get('path'), str) and not os.path.isabs(row['path']) and '..' not in row['path'].replace('\\','/').split('/'):
                 explicit.append({'path': str(knowledge / row['path']), 'title': row.get('title')})
     except (ValueError, OSError, UnicodeError):
-        pass
+        if diagnostics is not None:
+            diagnostics.setdefault('unavailable_locations', []).append({'path': str(knowledge / 'manifest.json'), 'reason': 'manifest_unavailable'})
     for row in explicit:
         try:
             path = registry.safe_path(cfg, row.get('path'), [knowledge], exists=True, text=True)
             add(_text_entry(path, knowledge, title=row.get('title'), group='知识 · 已登记'))
         except (ValueError, OSError):
+            if diagnostics is not None:
+                diagnostics.setdefault('unavailable_locations', []).append({'path': row.get('path') or '知识登记', 'reason': 'registered_reference_unavailable'})
             continue
     return list(result.values())
 

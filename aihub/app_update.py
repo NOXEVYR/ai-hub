@@ -23,8 +23,10 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+import zlib
+from .update_schedule import UpdateSchedule
 
-FEED_URL = "https://raw.githubusercontent.com/NOXEVYR/ai-hub/feat/aihub-collaboration-2.7.0/updates/candidate.json"
+FEED_URL = "https://raw.githubusercontent.com/NOXEVYR/ai-hub/main/updates/candidate.json"
 PACKAGE_BASE = "https://raw.githubusercontent.com/NOXEVYR/ai-hub/"
 CHANNEL = "candidate"
 MAX_FEED_BYTES = 64 * 1024
@@ -41,6 +43,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?-[0-9a-f]{16}$")
 TXID_RE = re.compile(r"^[0-9a-f]{32}$")
 FEED_SCHEMA = "ai-hub-update-v1"
+BOUND_FEED_SCHEMA = "ai-hub-update-v2"
 TICKET_SCHEMA = "ai-hub-update-ticket-v1"
 LOCK_SCHEMA = "ai-hub-update-lock-v1"
 TX_SCHEMA = "ai-hub-update-transaction-v1"
@@ -237,10 +240,14 @@ def _validate_feed(raw, current_version):
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
         raise UpdateSecurityError("更新信息格式无效。") from exc
-    if not isinstance(doc, dict) or set(doc) != {"schema", "app", "channel", "version", "commit", "package", "notes", "min_updater_version"}:
+    base_fields = {"schema", "app", "channel", "version", "commit", "package", "notes", "min_updater_version"}
+    bound = isinstance(doc, dict) and doc.get("schema") == BOUND_FEED_SCHEMA
+    if not isinstance(doc, dict) or set(doc) != base_fields | ({"platform", "architecture", "build_id"} if bound else set()):
         raise UpdateSecurityError("更新信息字段无效。")
-    if doc["schema"] != FEED_SCHEMA or doc["app"] != "ai-hub" or doc["channel"] != CHANNEL:
+    if doc["schema"] not in (FEED_SCHEMA, BOUND_FEED_SCHEMA) or doc["app"] != "ai-hub" or doc["channel"] != CHANNEL:
         raise UpdateSecurityError("更新来源或频道无效。")
+    if bound and (doc["platform"] != "windows" or doc["architecture"] != "x64"):
+        raise UpdateSecurityError("更新包不适用于 Windows x64。")
     version = _safe_version(doc["version"])
     if VERSION_RE.fullmatch(version).group(5) is not None:
         raise UpdateSecurityError("更新发布版本暂不支持构建元数据。")
@@ -248,12 +255,10 @@ def _validate_feed(raw, current_version):
     _safe_version(current_version)
     if _version_key(current_version) < _version_key(min_version):
         raise UpdateSecurityError("当前更新组件过旧，需先安装新版。")
-    if _version_key(version) <= _version_key(current_version):
-        raise UpdateNotNewerError("候选版本不高于当前版本。")
     if not isinstance(doc["commit"], str) or not COMMIT_RE.fullmatch(doc["commit"]):
         raise UpdateSecurityError("候选版本提交标识无效。")
     package = doc["package"]
-    if not isinstance(package, dict) or set(package) != {"bytes", "sha256"}:
+    if not isinstance(package, dict) or set(package) != {"bytes", "sha256"} | ({"manifest_sha256"} if bound else set()):
         raise UpdateSecurityError("更新包信息无效。")
     if type(package["bytes"]) is not int or package["bytes"] <= 0:
         raise UpdateSecurityError("更新包大小无效。")
@@ -262,6 +267,11 @@ def _validate_feed(raw, current_version):
     if not isinstance(doc["notes"], str) or len(doc["notes"]) > 8192 or any(ord(c) < 32 and c not in "\r\n\t" for c in doc["notes"]):
         raise UpdateSecurityError("更新说明无效。")
     release_id = version + "-" + package["sha256"][:16]
+    if bound and (doc["build_id"] != release_id or not isinstance(package["manifest_sha256"], str)
+                  or not SHA_RE.fullmatch(package["manifest_sha256"])):
+        raise UpdateSecurityError("更新构建身份或文件清单绑定无效。")
+    if _version_key(version) <= _version_key(current_version):
+        raise UpdateNotNewerError("候选版本不高于当前版本。")
     doc = dict(doc)
     doc["release_id"] = release_id
     doc["package_url"] = PACKAGE_BASE + doc["commit"] + "/releases/AI-Hub-v" + version + "-Windows-x64.zip"
@@ -368,7 +378,7 @@ def _zip_manifest(blob, expected_version=None):
             if len(raw_manifest) > 2 * 1024 * 1024:
                 raise UpdateSecurityError("更新包清单过大。")
             manifest = json.loads(raw_manifest.decode("utf-8"))
-        except (UnicodeError, ValueError, zipfile.BadZipFile, RuntimeError) as exc:
+        except (UnicodeError, ValueError, zipfile.BadZipFile, RuntimeError, zlib.error) as exc:
             raise UpdateSecurityError("更新包清单无效。") from exc
         if not isinstance(manifest, dict) or set(manifest) != {"version", "kind", "user_data_included", "files"}:
             raise UpdateSecurityError("更新包清单字段无效。")
@@ -399,7 +409,7 @@ def _zip_manifest(blob, expected_version=None):
                 raise UpdateSecurityError("更新包文件与清单不一致。")
             try:
                 data = archive.read(info)
-            except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            except (zipfile.BadZipFile, RuntimeError, OSError, zlib.error) as exc:
                 raise UpdateSecurityError("更新包文件校验失败。") from exc
             if len(data) != row["bytes"] or _sha(data) != row["sha256"]:
                 raise UpdateSecurityError("更新包文件摘要校验失败。")
@@ -467,15 +477,28 @@ def _verify_installed_manifest(root, current_files, current_version):
         installed = _read_json(path, 4 * 1024 * 1024)
     except (OSError, ValueError, TypeError) as exc:
         raise UpdateBusyError("安装目录缺少有效的程序文件清单，不能安全覆盖。") from exc
-    if not isinstance(installed, dict) or not {"version", "desktop_shell_version", "files"}.issubset(installed):
+    # A freshly extracted public ZIP has the archive ledger, whereas an
+    # in-place update writes an installation ledger. Both carry the same
+    # per-file hashes; do not require private bootstrap metadata for ZIP users.
+    archive_ledger = (isinstance(installed, dict)
+                      and set(installed) == {"version", "kind", "user_data_included", "files"}
+                      and installed.get("kind") == "Windows-x64"
+                      and installed.get("user_data_included") is False
+                      and "AI Hub.exe" in current_files)
+    if not isinstance(installed, dict) or (not archive_ledger and not {"version", "desktop_shell_version", "files"}.issubset(installed)):
         raise UpdateBusyError("安装程序文件清单格式不兼容，不能安全覆盖。")
     try:
         _safe_version(installed["version"])
-        _safe_version(installed["desktop_shell_version"])
+        if not archive_ledger:
+            _safe_version(installed["desktop_shell_version"])
     except UpdateSecurityError as exc:
         raise UpdateBusyError("安装程序文件清单版本无效，不能安全覆盖。") from exc
-    if installed["version"] != current_version:
+    if (installed["version"] != current_version
+            or not archive_ledger and installed["desktop_shell_version"] != current_version):
         raise UpdateBusyError("程序版本与安装文件清单不一致，请先修复安装。")
+    if (("kind" in installed and installed["kind"] != "Windows-x64")
+            or ("user_data_included" in installed and installed["user_data_included"] is not False)):
+        raise UpdateBusyError("安装文件清单的平台或数据标识无效。")
     entries = installed.get("files")
     if not isinstance(entries, list) or not entries or len(entries) > MAX_ARCHIVE_FILES:
         raise UpdateBusyError("安装程序文件清单无效，不能安全覆盖。")
@@ -518,6 +541,9 @@ def _installed_manifest_bytes(release, package_files, existing_manifest, root):
     payload = {"version": release["version"], "desktop_shell_version": release["version"],
                "display_name": existing_manifest.get("display_name") or "曜核",
                "source_commit": release["commit"],
+               "build_id": release.get("build_id", release["release_id"]),
+               "package_sha256": release["package"]["sha256"],
+               "release_manifest_sha256": release["package"].get("manifest_sha256"),
                "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "files": rows}
     return payload, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -766,8 +792,17 @@ def startup_guard(root):
         if not isinstance(value, dict) or value.get("schema") != LOCK_SCHEMA or not TXID_RE.fullmatch(str(value.get("transaction_id", ""))):
             raise RuntimeError("软件更新事务标记无效，已阻止启动以保护程序文件。")
         txid = value["transaction_id"]
-        txdir = _transaction_dir(root, txid)
-        tx = _read_json(txdir / "transaction.json", 128 * 1024)
+        try:
+            txdir = _transaction_dir(root, txid)
+            tx = _read_json(txdir / "transaction.json", 128 * 1024)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "软件更新事务记录缺失或无法验证，已阻止启动以保护程序文件。"
+                "请先备份 data/app-updates（含 install-lock.json、transactions 和备份），"
+                "保留当前程序目录；核对事务 " + txid +
+                " 的 transaction.json、journal.json 和备份后再人工恢复。"
+                "不要直接删除锁标记或覆盖程序；无法确认时请携带上述记录联系维护者。"
+            ) from exc
         if tx.get("transaction_id") != txid or tx.get("schema") != TX_SCHEMA:
             raise RuntimeError("软件更新事务状态无效，已阻止启动。")
         if tx.get("state") in {"succeeded", "failed", "cancelled", "recovered_no_write", "recovered_rollback"}:
@@ -829,6 +864,8 @@ class UpdateManager:
         self._worker_kind = None
         self._txn_lock = None
         self._closed = False
+        self._ui_ready_at = None
+        self._schedule_state = UpdateSchedule(self.base / "schedule.json", reader=_read_json, writer=_atomic_json)
         self._settings = {"auto_check": True, "auto_install": False}
         settings_path = self.base / "settings.json"
         if settings_path.exists():
@@ -852,7 +889,10 @@ class UpdateManager:
         try:
             saved = _read_json(path, 128 * 1024)
             if isinstance(saved, dict):
-                self._release = saved.get("release") if isinstance(saved.get("release"), dict) else None
+                stored = saved.get("release")
+                self._release = (_validate_feed(json.dumps({key: value for key, value in stored.items()
+                    if key not in {"release_id", "package_url"}}).encode("utf-8"), self.current_version)
+                    if isinstance(stored, dict) else None)
                 rid = saved.get("ready_release_id")
                 if (isinstance(rid, str) and RELEASE_ID_RE.fullmatch(rid)
                         and self._release and _version_key(self._release.get("version", "0.0.0")) > _version_key(self.current_version)
@@ -894,7 +934,8 @@ class UpdateManager:
             blob = package_path.read_bytes()
             manifest, raw, _contents = _zip_manifest(blob, release["version"])
             return (manifest["kind"] == "Windows-x64" and len(blob) == release["package"]["bytes"]
-                    and _sha(blob) == release["package"]["sha256"] and bool(raw))
+                    and _sha(blob) == release["package"]["sha256"] and bool(raw)
+                    and (release["schema"] != BOUND_FEED_SCHEMA or _sha(raw) == release["package"]["manifest_sha256"]))
         except (OSError, KeyError, TypeError, ValueError, UpdateSecurityError):
             return False
 
@@ -907,8 +948,14 @@ class UpdateManager:
                 "bytes": package.get("bytes"), "downloaded_bytes": self._downloaded_bytes,
                 "auto_check": self._settings["auto_check"], "auto_install": self._settings["auto_install"],
                 "channel": "candidate", "notes": release.get("notes", ""),
+                "build_id": release.get("build_id") or release.get("release_id"),
+                "platform": "windows", "architecture": "x64",
+                "ui_ready": self._ui_ready_at is not None,
+                "next_check_at": self._schedule_state.next_check_at,
+                "check_failures": self._schedule_state.failure_count,
                 "error_code": self._error_code, "message": self._message,
-                "safe_message": self._message}
+                "safe_message": self._message,
+                "operation_active": self._worker is not None and self._worker.is_alive()}
 
     def status(self):
         with self._lock:
@@ -932,11 +979,14 @@ class UpdateManager:
 
     def _worker_entry(self, kind, function):
         admitted = False
+        succeeded = False
         try:
             if self.gate is not None:
                 admitted = bool(self.gate.enter())
                 if not admitted:
-                    raise UpdateBusyError("曜核当前正准备退出，请稍后重试更新。")
+                    # Shutdown won admission. Keep the durable retry reservation
+                    # intact; a refused worker must not perform even status writes.
+                    return
             function()
             # Automatic installation is staged in the background only. Exit and
             # installation remain an explicit tray action owned by the desktop.
@@ -950,6 +1000,7 @@ class UpdateManager:
                     self._state, self._message = "downloading", "正在后台下载并验证候选版更新。"
             if release_id:
                 self._do_download(release_id)
+            succeeded = True
         except UpdateBusyError as exc:
             with self._lock:
                 if self._ready_release_id:
@@ -975,17 +1026,32 @@ class UpdateManager:
                 self._error_code = "network_error"
                 self._persist_locked()
         finally:
-            if admitted:
-                self.gate.leave()
-            with self._lock:
-                if self._worker is threading.current_thread():
-                    self._worker = None
-                    self._worker_kind = None
+            try:
+                with self._lock:
+                    try:
+                        if kind == "check" and (self.gate is None or admitted):
+                            if not self._schedule_state.finished(succeeded):
+                                self._error_code = "schedule_write_failed"
+                                self._message = "检查已结束，但无法保存下次检查时间；自动检查已暂停，请检查程序目录权限。"
+                    finally:
+                        if self._worker is threading.current_thread():
+                            self._worker = None
+                            self._worker_kind = None
+            finally:
+                # Completion metadata is part of the admitted operation too.
+                if admitted:
+                    self.gate.leave()
 
-    def check(self):
+    def check(self, automatic=False):
         with self._lock:
-            if self._state in ("checking", "downloading", "prepared", "applying"):
+            if (self._state in ("checking", "downloading", "prepared", "applying")
+                    or self._worker is not None and self._worker.is_alive()):
                 return self._snapshot_locked()
+            if automatic and (self._ui_ready_at is None or not self._settings["auto_check"]
+                              or not self._schedule_state.due(self._ui_ready_at)):
+                return self._snapshot_locked()
+            if not self._schedule_state.started():
+                raise UpdateBusyError("无法保存更新检查计划，已暂停检查；请检查程序目录写入权限。")
             self._state, self._error_code, self._message = "checking", None, "正在检查候选版更新。"
         return self._start_worker("check", self._do_check)
 
@@ -1055,7 +1121,9 @@ class UpdateManager:
             self._downloaded_bytes = len(blob)
         if len(blob) != expected or _sha(blob) != release["package"]["sha256"]:
             raise UpdateSecurityError("更新包大小或 SHA-256 与候选信息不一致。")
-        _zip_manifest(blob, release["version"])
+        _manifest, raw_manifest, _contents = _zip_manifest(blob, release["version"])
+        if release["schema"] == BOUND_FEED_SCHEMA and _sha(raw_manifest) != release["package"]["manifest_sha256"]:
+            raise UpdateSecurityError("更新包内文件清单与发布信息绑定不一致。")
         target = self.packages / (release_id + ".zip")
         if os.path.lexists(target):
             if _hash_regular(target) != release["package"]["sha256"]:
@@ -1097,6 +1165,14 @@ class UpdateManager:
             self.start_scheduler()
         return snapshot
 
+    def ui_ready(self):
+        with self._lock:
+            if self._ui_ready_at is None:
+                self._ui_ready_at = time.time()
+        self.start_scheduler()
+        self._wake_scheduler.set()
+        return self.status()
+
     def start_scheduler(self):
         with self._lock:
             if self._closed or not self._settings["auto_check"]:
@@ -1112,20 +1188,33 @@ class UpdateManager:
             return {"thread": thread, "stop_event": self._stop}
 
     def _schedule(self):
-        delay = 0
+        delay = 60
         while not self._stop.is_set():
             if self._wake_scheduler.wait(delay):
                 self._wake_scheduler.clear()
                 if self._stop.is_set():
                     return
-            with self._lock:
-                enabled = self._settings["auto_check"]
-            if enabled:
-                try:
-                    self.check()
-                except Exception:
-                    pass
-            delay = 12 * 60 * 60
+            # Timing reservations and clock repairs also persist local data.
+            # Admit the whole active iteration, while leaving sleep uncounted.
+            admitted = False
+            if self.gate is not None:
+                admitted = bool(self.gate.enter())
+                if not admitted:
+                    return
+            try:
+                with self._lock:
+                    enabled = self._settings["auto_check"]
+                if enabled:
+                    try:
+                        self.check(automatic=True)
+                    except Exception:
+                        pass
+                with self._lock:
+                    delay = (max(1, min(60, self._schedule_state.delay(self._ui_ready_at)))
+                             if self._ui_ready_at is not None else 60)
+            finally:
+                if admitted:
+                    self.gate.leave()
 
     def prepare(self, release_id, restart, desktop):
         if not isinstance(release_id, str) or not RELEASE_ID_RE.fullmatch(release_id):
@@ -1156,6 +1245,9 @@ class UpdateManager:
             package_path = self.packages / (release_id + ".zip")
             blob = package_path.read_bytes()
             manifest, raw_manifest, package_files = _zip_manifest(blob, self._release["version"])
+            if (self._release["schema"] == BOUND_FEED_SCHEMA
+                    and _sha(raw_manifest) != self._release["package"]["manifest_sha256"]):
+                raise UpdateSecurityError("更新包清单与官方发布信息不一致。")
             baseline = _program_files(self.root)
             package_set = set(package_files)
             installed_manifest = _verify_installed_manifest(self.root, baseline, self.current_version)

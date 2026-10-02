@@ -15,10 +15,13 @@
   const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleDateString("sv") : "-";
   const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+  let activeWorkspaceRoot = '';
   async function api(path, opts = {}) {
-    const res = await fetch(path, opts.body ? {
+    const scopedMutation=/^\/api\/(?:models\/(?:classify|check-updates)|model\/\d+\/(?:edit|source|check|resolve-source))$/.test(path);
+    const body=opts.body && scopedMutation ? {_workspace_root:activeWorkspaceRoot,...opts.body} : opts.body;
+    const res = await fetch(path, body ? {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(opts.body)
+      body: JSON.stringify(body)
     } : undefined);
     const ct = res.headers.get("content-type") || "";
     const data = ct.includes("json") ? await res.json() : await res.text();
@@ -164,6 +167,8 @@
     const chosen=new Set(current?.purposes||[]),showPurposes=bulk||current?.purpose_source!=='none';
     openModal(`<div class="category-editor"><div class="eyebrow">ORGANIZE ASSETS</div><h2>${bulk?'批量分类 · '+ids.length+' 个模型':'调整模型分类'}</h2><p class="muted">保存后会优先使用你的分类。模型文件仍在原来的位置。</p><label class="category-field">创作用途<select id="category-domain">${bulk?'<option value="keep">保持原分类</option>':''}<option value="auto" ${!bulk&&domain==='auto'?'selected':''}>自动识别</option>${Object.entries(options.domains).map(([id,d])=>`<option value="${esc(id)}" ${!bulk&&domain===id?'selected':''}>${esc(d.label)}</option>`).join('')}</select></label><label class="category-field">LoRA 用途<select id="category-mode">${bulk?'<option value="keep">保持原用途</option>':''}<option value="auto" ${!bulk&&mode==='auto'?'selected':''}>使用自动建议</option><option value="set" ${!bulk&&mode==='set'?'selected':''}>手动指定（可多选）</option></select></label><div class="category-checks">${Object.entries(options.purposes).map(([id,label])=>`<label><input type="checkbox" data-category-purpose="${esc(id)}" ${chosen.has(id)?'checked':''}><span>${esc(label)}</span></label>`).join('')}</div><p class="caption-note">LoRA 用途只应用于所选的 LoRA；勾选用途后会切换为手动指定。</p><p class="dialog-error" id="category-error" role="alert"></p><div class="dialog-actions"><button class="btn ghost" id="category-reset">恢复自动分类</button><button class="btn" id="category-cancel">取消</button><button class="btn primary" id="category-save">保存分类</button></div></div>`);
     const editor=$('.category-editor'),error=$('#category-error',editor);
+    const draft=window.AIHubAppUpdate?.bind(editor,`category:${activeWorkspaceRoot}:${ids.join(',')}`);
+    $('#modal').onModalClose=()=>draft?.discard();
     const dimension=(key,label,values)=>`<label class="category-field">${label}<select id="category-${key}">${bulk?'<option value="keep">保持原值</option>':''}<option value="auto">使用已有记录</option>${Object.entries(values||{}).map(([id,text])=>`<option value="${esc(id)}" ${current?.['manual_'+key]===id?'selected':''}>${esc(text)}</option>`).join('')}</select></label>`;
     error.insertAdjacentHTML('beforebegin',dimension('scope','所属范围',options.scopes)+dimension('model_role','模型角色',options.roles)+`<label class="category-field">兼容架构（人工记录）<input id="category-architecture" value="${esc(current?.manual_architecture||'')}" placeholder="${bulk?'留空保持原值':'留空使用已有记录'}"></label>`);
     if(!showPurposes){$('#category-mode',editor).closest('label').hidden=true;$('.category-checks',editor).hidden=true;$('.caption-note',editor).hidden=true;}
@@ -183,9 +188,11 @@
         const architecture=$('#category-architecture',editor).value.trim();if(architecture||!bulk)body.architecture=architecture||null;
         if(Object.keys(body).length===1){error.textContent='请选择要调整的分类。';return;}
       }
-      $$('button',editor).forEach(b=>b.disabled=true);error.textContent='';
+      draft?.edit();const submitted=draft?.snapshot();
+      $$('input,textarea,select,button',editor).forEach(b=>b.disabled=true);error.textContent='';
       try{
         const result=await api('/api/models/classify',{body:{...body,preview:true}});if(!editor.isConnected)return;
+        if(submitted && draft.changed(submitted)){error.textContent='分类选择已变化，请重新预览。';return;}
         openModal(`<h2>确认分类预览</h2><p>以下只更新人工分类记录，原文件保持原位置。</p>${result.items.map(item=>`<section class="intro"><h3>${esc(item.name)}</h3><p>原分类：${esc([item.before.scope_label,item.before.model_role_label,item.before.domain_label,item.before.architecture].filter(Boolean).join(' · '))}</p><p>新分类：${esc([item.after.scope_label,item.after.model_role_label,item.after.domain_label,item.after.architecture].filter(Boolean).join(' · '))}</p><p>LoRA 用途：${esc(item.after.purpose_labels.join(' / '))}</p></section>`).join('')}<p class="dialog-error" id="category-preview-error"></p><div class="dialog-actions"><button class="btn" id="category-preview-back">返回修改</button><button class="btn primary" id="category-confirm">保存人工分类</button></div>`);
         $('#category-preview-back').onclick=()=>{
           if(ids.length===1)openCategoryEditor(ids,options,result.items[0].after,onSaved);
@@ -198,36 +205,62 @@
         };
         const confirm=$('#category-confirm');confirm.onclick=async()=>{confirm.disabled=true;try{const r=await api('/api/models/classify',{body});if(confirm.isConnected){closeModal();onSaved?.();toast(`已更新 ${r.updated} 个模型的分类`,'ok');}}catch(e){if(confirm.isConnected){$('#category-preview-error').textContent=e.message;confirm.disabled=false;}}};
       }
-      catch(e){if(editor.isConnected){error.textContent=e.message;$$('button',editor).forEach(b=>b.disabled=false);}}
+      catch(e){if(editor.isConnected)error.textContent=e.message;}
+      finally{if(editor.isConnected)$$('input,textarea,select,button',editor).forEach(b=>b.disabled=false);}
     };
     $('#category-save',editor).onclick=()=>save(false);$('#category-reset',editor).onclick=()=>save(true);
     $('#category-domain',editor).focus();
   }
 
   // ---------- 抽屉 / 模态 / 灯箱 ----------
-  let activeDrawerId = null, drawerRequest = 0;
-  function openDrawer(html) { $("#drawer").innerHTML = html; $("#drawer").classList.remove("hidden"); $("#drawer-mask").classList.remove("hidden"); }
-  function closeDrawer() { activeDrawerId = null; drawerRequest++; $("#drawer").classList.add("hidden"); $("#drawer-mask").classList.add("hidden"); }
+  let activeDrawerId = null, activeDrawerPath = null, drawerRequest = 0;
+  const overlays = AIHubOverlays.create({document,background:$('#app')});
+  function openDrawer(html) { $("#drawer").innerHTML = html; $("#drawer").classList.remove("hidden"); $("#drawer-mask").classList.remove("hidden"); overlays.show('drawer',$('#drawer'),closeDrawer); }
+  function closeDrawer() { rememberModelDraft(); activeDrawerId = null; activeDrawerPath = null; drawerRequest++; $("#drawer").classList.add("hidden"); $("#drawer-mask").classList.add("hidden"); overlays.hide('drawer'); }
   $("#drawer-mask").onclick = closeDrawer;
-  function openModal(html) { $("#modal").innerHTML = `<button class="btn small close">✕ 关闭</button>` + html; $("#modal-mask").classList.remove("hidden"); $(".close", $("#modal")).onclick = closeModal; }
-  function closeModal() { $("#modal-mask").classList.add("hidden"); }
+  function modalGeneration() { const mask=$('#modal-mask');mask.dataset.modalGeneration=String((Number(mask.dataset.modalGeneration)||0)+1); }
+  function openModal(html) { modalGeneration(); $("#modal").innerHTML = `<button class="btn small close">✕ 关闭</button>` + html; $("#modal-mask").classList.remove("hidden"); $(".close", $("#modal")).onclick = closeModal; overlays.show('modal',$('#modal'),closeModal); }
+  function closeModal() { modalGeneration(); const modal=$('#modal'),onClose=modal.onModalClose;modal.onModalClose=null;onClose?.(); $("#modal-mask").classList.add("hidden"); modal.replaceChildren(); overlays.hide('modal'); }
   $("#modal-mask").onclick = e => { if (e.target.id === "modal-mask") closeModal(); };
   function openLightbox(imgPath,metaHTML,onDelete=null){
+    closeLightbox();
     $('#lightbox').innerHTML=`<div class="lightbox-toolbar"><span>${icon('image',17)} 图片预览</span><div>${onDelete?`<button class="btn small danger-ghost" id="lightbox-delete">${icon('trash',15)} 删除图片</button>`:''}<button class="btn small" id="lightbox-close">${icon('close',16)} 关闭</button></div></div><div class="lightbox-canvas"><img class="main" src="${fileURL(imgPath)}" alt="图片大图预览"></div><div class="meta">${metaHTML||''}</div>`;
     $('#lightbox').classList.remove('hidden');
     $('#lightbox-close').onclick=closeLightbox;
     if(onDelete)$('#lightbox-delete').onclick=onDelete;
-    $('#lightbox-close').focus();
+    overlays.show('lightbox',$('#lightbox'),closeLightbox);
   }
 
-  function closeLightbox() { $("#lightbox").classList.add("hidden"); $("#lightbox").innerHTML = ""; }
+  function closeLightbox() {
+    $$('#lightbox video, #lightbox audio').forEach(media=>{media.pause();media.removeAttribute('src');media.load();});
+    $("#lightbox").classList.add("hidden"); $("#lightbox").innerHTML = ""; overlays.hide('lightbox');
+  }
+  function openMedia(item,onDeleted){
+    if(!item.available){toast('文件已变化或不可访问，请刷新索引。','err');return;}
+    if(item.category==='image'){
+      openLightbox(item.path,`<strong>${esc(item.name)}</strong><span>${fmtSize(item.size)} · ${esc(item.parent)}</span>${item.prompt?`<p>${esc(item.prompt)}</p>`:''}`,item.deletable?()=>requestImageDeletion(item,onDeleted):null);
+      return;
+    }
+    closeLightbox();
+    const type=item.category==='video'?'video':'audio',label=type==='video'?'视频':'音频';
+    $('#lightbox').innerHTML=`<div class="lightbox-toolbar"><span>${icon(type,17)} ${label}预览</span><button class="btn small" id="lightbox-close">${icon('close',16)} 关闭</button></div><div class="lightbox-canvas media-canvas"><${type} controls preload="metadata" src="/api/media/file?path=${encodeURIComponent(item.path)}"></${type}></div><div class="meta"><strong>${esc(item.name)}</strong><p>${fmtSize(item.size)} · ${esc(item.parent)}</p><p id="media-playback-error" class="warning-note" role="status" hidden>当前浏览器无法播放这份媒体，或文件已变化。可打开所在文件夹查看；文件变化后请刷新索引。</p><div class="copy-paths"><button class="btn small" id="media-reveal">打开所在文件夹</button><button class="btn small" id="media-copy">复制路径</button></div></div>`;
+    $('#lightbox').classList.remove('hidden');$('#lightbox-close').onclick=closeLightbox;
+    $(type,$('#lightbox')).onerror=()=>{$('#media-playback-error').hidden=false;};
+    $('#media-copy').onclick=()=>copyPath(item.path);
+    $('#media-reveal').onclick=async()=>{try{await api('/api/context/reveal',{body:{kind:'indexed',path:item.path}});}catch(error){toast(error.message,'err');}};
+    overlays.show('lightbox',$('#lightbox'),closeLightbox);
+  }
   $("#lightbox").onclick = e => { if (e.target.id === "lightbox") closeLightbox(); };
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeLightbox(); closeModal(); closeDrawer(); } });
 
   // ---------- 任务轮询 ----------
   let polling = null;
+  let jobRequest = 0;
+  let lastJobResponse = 0;
   function pollJobs() {
+    const request = ++jobRequest;
     api("/api/jobs").then(({ jobs }) => {
+      if (request <= lastJobResponse) return;
+      lastJobResponse = request;
       const running = jobs.filter(j => j.status === "running");
       const bar = $("#jobbar");
       if (running.length) {
@@ -240,13 +273,15 @@
       $("#sidebar-status").innerHTML =
         `<div>状态 <b>${running.length ? "扫描中" : "空闲"}</b></div>` +
         (last ? `<div>${esc(last.name)} · ${last.status}</div>` : "");
-    }).catch(() => { $("#sidebar-status").textContent="本地服务暂时未连接"; });
+    }).catch(() => { if (request > lastJobResponse) { lastJobResponse = request; $("#sidebar-status").textContent="本地服务暂时未连接"; } });
   }
   setInterval(pollJobs, 2500);
 
   // ---------- 路由 ----------
-  const titles = { overview: "工作总览", models: "模型资产", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
-    images: "出图图库", llm: "模型管理", files: "文件总览", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作环境", collaboration:"协作与记忆", settings: "设置", organizer: "安全区整理" };
+  const titles = { overview: "工作总览", models: "模型管理", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
+    assets:"素材管理", images: "图片生成记录", llm: "语言与语音", files: "文件空间", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作区设置", collaboration:"协作与记忆", settings: "软件设置", organizer: "安全区整理" };
+  const parentPage=page=>({images:'assets',llm:'models',analysis:'models',updates:'models'}[page]||page);
+  const modelTabs=page=>`<nav class="resource-tabs" aria-label="模型管理视图">${[['models','全部模型'],['llm','语言与语音'],['analysis','使用分析'],['updates','版本更新']].map(([key,label])=>`<a href="#/${key}" ${key===page?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`;
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
     const [page, qs] = h.split("?");
@@ -260,20 +295,22 @@
     let state = {};
     if (activePage === 'models') state = { ...modelState };
     if (activePage === 'images') state = { ...imgState };
+    if (activePage === 'assets') state = AIHubMedia.capture();
     if (activePage === 'analysis') state = { type: value('an-type') || pages.analysis._type };
     if (activePage === 'workflows') state = { state: value('wf-state'), query: value('wf-query') };
     if (activePage === 'reports') state = AIHubWorkcenter.capture(view);
     if (activePage === 'capabilities') state = AIHubCapabilityLibrary.capture(view, AIHubCapabilities);
     if (activePage === 'files') state = { path: fileState.path, query: value('fs-q') };
     if (activePage === 'organizer') state = AIHubOrganizer.capture(view);
-    if (activePage === 'projects') state = view?.dataset.wcView==='registry' ? {legacy:AIHubRegistry.capture(view.querySelector('#wc-project-content'))} : {};
+    if (activePage === 'projects') state = view?.dataset.wcView==='registry' ? {legacy:AIHubRegistry.capture(view.querySelector('#wc-project-content'))} : AIHubWorkcenter.captureProjects(view);
     if (activePage === 'workspace') state = AIHubWorkspace.capture(view);
     if (activePage === 'collaboration') state = AIHubCollaboration.capture(view);
+    if (activePage === 'settings') state = captureSettingsDraft(view);
     return {
       state, top: host.scrollTop, left: host.scrollLeft, search: $('#global-search').value,
       scrolls: scrollSelectors.map(selector => $$(selector, host).map(el => [el.scrollLeft, el.scrollTop])),
       drawer: activeDrawerId === null ? null : {
-        id: activeDrawerId, top: drawer.scrollTop,
+        id: activeDrawerId, path: activeDrawerPath, top: drawer.scrollTop,
         expanded: $$('details', drawer).map(el => el.open),
         notes: $('#notes', drawer)?.value, source: $('#src-input', drawer)?.value,
         rating: $('#stars', drawer) ? $$('#stars .on', drawer).length : undefined,
@@ -287,13 +324,19 @@
     closeDrawer(); closeLightbox(); closeModal();
     document.body.classList.remove('nav-open');
     $('#menu-toggle').setAttribute('aria-expanded','false');
-    $$('#nav a').forEach(a => { a.classList.toggle('active',a.dataset.page===page); if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current'); });
+    $$('#nav a').forEach(a => { const active=a.dataset.page===parentPage(page);a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current'); });
     $('#page-title').textContent=titles[page]||page;
     const container=document.createElement('div');container.className='page-view';
     $('#page').replaceChildren(container);$('#page').scrollTop=0;
     if (snapshot) $('#global-search').value = snapshot.search;
+    try {
+      const workspace=await api('/api/workspace/status');
+      if(request!==routeRequest || !container.isConnected)return;
+      activeWorkspaceRoot=workspace.root || '';
+    }catch(error){if(request===routeRequest && container.isConnected)failPage(container,error);return;}
     await (pages[page] || pages.overview)(container, params, snapshot?.state);
     if (request !== routeRequest || !container.isConnected) return;
+    if(parentPage(page)==='models')container.insertAdjacentHTML('afterbegin',modelTabs(page));
     if (snapshot?.drawer) await openModelDrawer(snapshot.drawer.id, snapshot.drawer);
     if (request !== routeRequest || !container.isConnected || !snapshot) return;
     requestAnimationFrame(() => {
@@ -349,12 +392,13 @@
   }
 
   const pages = {};
+  pages.assets = AIHubMedia.createPage({api,heading,icon,fmtSize,fmtDate,thumbURL,pager,empty,openMedia,requestDelete:requestImageDeletion});
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
   pages.projects=AIHubWorkcenter.createProjects({...registryEnv,legacyPage:AIHubRegistry.createProjects(registryEnv)});
-  pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities});
-  pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs});
-  pages.collaboration=AIHubCollaboration.createPage({api,heading});
+  pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities,copyPath});
+  pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs,openModal,closeModal});
+  pages.collaboration=AIHubCollaboration.createPage({api,heading,openModal,closeModal,copyText:async value=>{await navigator.clipboard.writeText(value);}});
 
   // Presentation only: all overview values retain their existing API scope.
   function renderOverview(ov,mg,organizer) {
@@ -367,9 +411,9 @@
     const action=(ic,title,detail,page,query,tone='')=>`<div class="attention-row"><span class="attention-icon ${tone}">${icon(ic,17)}</span><div class="attention-content"><strong>${title}</strong><p>${detail}</p></div><button class="action" data-nav="${page}" data-query="${esc(query||'')}" aria-label="查看${esc(title)}">${icon('arrow',15)}</button></div>`;
     const recent=ov.recent_models.slice(0,5);
     return `<div class="lc-overview-heading"><div><div class="eyebrow">YOUR LOCAL WORKSPACE</div><h2>工作总览</h2><p>资产、生成记录与协作，随时接续。</p></div><a class="lc-root" href="#/workspace" title="${esc(ov.ai_root || '配置工作环境')}">${icon('folder',16)}<span><small>当前工作区</small><b>${esc(ov.ai_root || '尚未配置')}</b></span>${icon('arrow',14)}</a></div>
-    ${AIHubOrganizer.workspaceBanner(organizer)}
+    ${ov.ai_root ? AIHubOrganizer.workspaceBanner(organizer) : ''}
     <section class="metric-grid" aria-label="资产核心指标">${metric('中央主模型',(ov.central_counts.Checkpoint||0)+(ov.central_counts.Diffusion||0),'Checkpoint / Diffusion · 当前索引','layers')}${metric('中央 LoRA',ov.central_counts.LoRA||0,'架构、用途与训练信息','cpu')}${metric('出图记录',ov.image_count.toLocaleString(),`<em>${ov.image_with_meta}</em> 张含生成元数据`,'image')}${metric('文件占用',fmtSize(ov.unique_size),`扫描范围去重 · 可用 ${fmtSize(ov.disk.free)}`,'disk')}</section>
-    <nav class="lc-entry-grid" aria-label="常用工作入口">${entry('layers','浏览模型','查找模型与 LoRA','models')}${entry('image','打开图库','回看出图与生成参数','images')}${entry('workflow','能力中心','Skill、接口与任务','capabilities')}${entry('document','项目与报告','按来源查阅工作成果','reports')}</nav>
+    <nav class="lc-entry-grid" aria-label="常用工作入口">${entry('layers','模型管理','模型、LoRA 与配套组件','models')}${entry('image','素材管理','图片、视频、音频与生成记录','assets')}${entry('workflow','能力中心','Skill、接口与任务','capabilities')}${entry('document','项目与报告','按来源查阅工作成果','reports')}</nav>
     <div class="lc-dashboard-grid"><div class="lc-main-column">
     <section class="panel lc-recent"><div class="panel-head"><div><span class="lc-section-kicker">RECENT ASSETS</span><h3>最近修改的模型</h3></div><a href="#/models" class="link">查看全部 ${icon('arrow',13)}</a></div><div class="table-wrap"><table class="tbl recent-table"><thead><tr><th>模型 / 架构</th><th>类型</th><th>大小</th><th class="hide-small">文件修改</th></tr></thead><tbody>${recent.map(m=>`<tr><td><div class="file-label"><span class="type-icon">${icon('layers',15)}</span><div class="lc-model-copy"><button class="model-link" data-id="${m.rowid_pk}" title="${esc(m.filename)}">${esc(m.filename)}</button><span class="file-sub">${esc(m.classification?.architecture||m.family||'架构待确认')}</span></div></div></td><td>${typeBadge(m.classification?.model_role||m.mtype)}</td><td class="num">${fmtSize(m.size)}</td><td class="muted hide-small">${fmtDate(m.mtime)}</td></tr>`).join('')}</tbody></table>${recent.length?'':'<div class="lc-empty">尚无模型索引。配置工作环境后，点击「刷新索引」读取本地资产。</div>'}</div><div class="lc-panel-footer">${icon('folder',13)} 右键模型行可打开所在文件夹、复制路径或查看详情</div></section>
     <section class="panel purpose-launcher"><div class="panel-head"><div><span class="lc-section-kicker">EXPLORE BY PURPOSE</span><h3>按创作用途探索</h3></div><span class="caption-note">全部索引 · 含配套组件</span></div><div class="body"><div class="domain-grid">${functional.map(c=>`<button class="domain-card" data-nav="models" data-query="domain=${encodeURIComponent(c.id)}&scope=&kind=&view=all"><span class="domain-icon">${icon(c.icon,20)}</span><span class="domain-name">${esc(c.label)}</span><b>${c.count.toLocaleString()}</b></button>`).join('')}</div>${functional.length?'':'<p class="caption-note">模型入库后会在这里按用途显示。</p>'}</div></section>
@@ -389,19 +433,19 @@
     try{
       const [ov,mg,organizer]=await Promise.all([api('/api/overview'),api('/api/management'),api('/api/organizer/status')]);
       if(!el.isConnected)return;
-      el.innerHTML=AIHubWorkspace.welcome(Boolean(ov.ai_root && ov.total_files)) + renderOverview(ov,mg,organizer);
+      el.innerHTML=AIHubWorkspace.welcome(Boolean(ov.ai_root)) + renderOverview(ov,mg,organizer);
       bindNavigation(el);bindModelLinks(el);
     }catch(e){failPage(el,e);}
   };
 
   function bindModelLinks(el) { $$(".model-link", el).forEach(n => n.onclick = () => openModelDrawer(+n.dataset.id)); }
 
-  const modelState={page:1,size:40,type:'',family:'',state:'',usage:'',q:'',sort:'name',scope:'central',kind:'',view:'all',domain:'image',purpose:'',intake:''};
+  const modelState={page:1,size:40,type:'',family:'',state:'',usage:'',q:'',sort:'name',scope:'central',kind:'',view:'all',domain:'',purpose:'',intake:''};
   pages.models=(el,params=new URLSearchParams(),restored)=>{
     if(restored)Object.assign(modelState,restored);
     else if(params.size){Object.assign(modelState,{page:1,type:'',family:'',state:'',usage:'',q:'',scope:'central',kind:'',view:'all',domain:'',purpose:'',intake:''});for(const key of Object.keys(modelState))if(params.has(key))modelState[key]=['page','size'].includes(key)?Math.max(1,+params.get(key)||1):params.get(key);}
     const tabs=[['all','全部类型',{kind:'',type:''}],['base','主模型',{kind:'base',type:''}],['lora','LoRA',{kind:'',type:'LoRA'}],['components','配套组件',{kind:'components',type:''}],['favorites','我的收藏',{kind:'',type:''}]];
-    el.innerHTML=heading('模型资产','先选择创作用途，再查找模型与适合的 LoRA。','MODEL LIBRARY')+`
+    el.innerHTML=heading('模型管理','按用途、模型角色与兼容架构查找模型、LoRA 和配套组件。','MODEL LIBRARY')+`
       <div class="catalog-section-label"><span>按创作用途</span><small id="domain-scope">当前范围 · 全部类型</small></div>
       <div class="domain-grid" id="model-domains" role="group" aria-label="模型功能分类"></div>
       <div class="catalog-tools"><div class="segmented" role="group" aria-label="模型快捷筛选">${tabs.map(([id,label])=>`<button data-tab="${id}" class="${modelState.view===id?'active':''}">${label}</button>`).join('')}</div><span class="caption-note">架构作为兼容条件保留</span></div>
@@ -459,7 +503,37 @@
   };
 
   // ---------- 模型详情抽屉 ----------
+  // Drafts live only in this window. Their owner identity prevents a model ID
+  // reused in another workspace from picking up an unrelated draft.
+  const modelDrafts = new Map(), settingsDrafts = new Map();
+  function rememberModelDraft() {
+    if (activeDrawerId === null || !activeDrawerPath) return;
+    const drawer = $('#drawer'), notes = $('#notes', drawer), source = $('#src-input', drawer), stars = $('#stars', drawer);
+    if (!notes || !source || !stars) return;
+    const key = `model:${activeDrawerId}:${activeDrawerPath}`;
+    if (notes.dataset.appDraftKey !== `${key}:notes`) return;
+    const snapshot = window.AIHubAppUpdate?.snapshotControls([notes, source, stars]);
+    if (!snapshot || ![...snapshot.values()].some(version => version !== undefined)) { modelDrafts.delete(key); return; }
+    const draft = {expanded:$$('details', drawer).map(detail => detail.open), top:drawer.scrollTop};
+    if (snapshot.get(`${key}:notes`) !== undefined) draft.notes = notes.value;
+    if (snapshot.get(`${key}:source`) !== undefined) draft.source = source.value;
+    if (snapshot.get(`${key}:rating`) !== undefined) draft.rating = $$('span', stars).filter(s => s.classList.contains('on')).length;
+    modelDrafts.set(key, draft);
+  }
+  function captureSettingsDraft(el) {
+    if (!el || !Object.hasOwn(el.dataset, 'appDraftWorkspace')) return {};
+    const snapshot = window.AIHubAppUpdate?.snapshot(el);
+    if (!snapshot || ![...snapshot.values()].some(version => version !== undefined)) {
+      settingsDrafts.delete(el.dataset.appDraftWorkspace); return {};
+    }
+    const state = {owner:el.dataset.appDraftWorkspace, scope:el.dataset.appDraftScope,
+      values:Object.fromEntries($$('[data-app-draft-key]', el).filter(control => snapshot.get(control.dataset.appDraftKey) !== undefined).map(control => [control.id, control.value])),
+      detected:el.appSettingsDetected || null};
+    settingsDrafts.set(state.owner, state);
+    return state;
+  }
   async function openModelDrawer(id, restored) {
+    rememberModelDraft();
     const request = ++drawerRequest;
     activeDrawerId = id;
     const isCurrent = () => request === drawerRequest && activeDrawerId === id;
@@ -468,8 +542,25 @@
     let m;
     try { m = await api("/api/model/" + id); } catch (e) { if(isCurrent())openDrawer(`<button class="btn small" id="drawer-error-close">关闭详情</button><div class="badge b-red">${esc(e.message)}</div>`); if(isCurrent())$('#drawer-error-close').onclick=closeDrawer; return; }
     if (!isCurrent()) return;
+    activeDrawerPath = m.path;
+    const draftKey = `model:${id}:${m.path}`;
+    if (restored?.path && restored.path !== m.path) restored = null;
+    const cached = modelDrafts.get(draftKey);
+    const revisions = window.AIHubAppUpdate?.snapshotControls(['notes', 'source', 'rating'].map(field => ({dataset:{appDraftKey:`${draftKey}:${field}`}})));
+    if (cached && revisions && [...revisions.values()].some(version => version !== undefined)) restored = {...cached};
+    if (restored && revisions) {
+      restored = {...restored};
+      for (const field of ['notes', 'source', 'rating']) {
+        if (revisions.get(`${draftKey}:${field}`) === undefined) delete restored[field];
+      }
+    }
     const hm = m.header_meta || {};
     const kv = (k, v) => v !== null && v !== undefined && v !== "" ? `<div class="k">${k}</div><div class="v">${esc(v)}</div>` : "";
+    const sourceInfo = model =>
+      kv("来源", model.source_url || "未绑定") +
+      kv("来源方式", model.source_conf === "header" ? "模型内嵌元数据" : model.source_conf === "sidecar" ? "伴随文件" : model.source_conf === "registry" ? "手动登记" : model.source_conf === "search" ? "文件名搜索（低置信）" : "-") +
+      kv("最新版本", model.latest_version_name ? model.latest_version_name + (model.latest_version_date ? `（${model.latest_version_date.slice(0, 10)}）` : "") : "-") +
+      kv("远端底模", model.latest_base_model) + kv("检查时间", model.last_checked || "-") + kv("备注", model.check_error);
     const previewSrc = m.preview_path ? thumbURL(m.preview_path)
       : (m.preview_url ? m.preview_url : (m.images[0] ? thumbURL(m.images[0].path) : null));
     openDrawer(`
@@ -491,17 +582,11 @@
         <div style="margin-top:8px"><button class="btn small" id="btn-reveal">${icon("folder",14)} 打开所在文件夹</button><button class="btn small" id="btn-copy-model" style="margin-left:8px">复制运行路径</button></div>
       </div></div>
       <div class="dsec"><div class="t">${icon("refresh",15)} 下载来源与更新</div><div class="c">
-        <div class="kv">
-          ${kv("来源", m.source_url || "未绑定")}
-          ${kv("来源方式", m.source_conf === "header" ? "模型内嵌元数据" : m.source_conf === "sidecar" ? "伴随文件" : m.source_conf === "registry" ? "手动登记" : m.source_conf === "search" ? "文件名搜索（低置信）" : "-")}
-          ${kv("最新版本", m.latest_version_name ? m.latest_version_name + (m.latest_version_date ? `（${m.latest_version_date.slice(0, 10)}）` : "") : "-")}
-          ${kv("远端底模", m.latest_base_model)}
-          ${kv("检查时间", m.last_checked || "-")} ${kv("备注", m.check_error)}
-        </div>
+        <div class="kv" id="model-source-info">${sourceInfo(m)}</div>
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn small" id="btn-resolve">${icon("search",14)} 识别来源</button>
           <button class="btn small" id="btn-check">${icon("refresh",14)} 检查更新</button>
-          <input class="inp" id="src-input" placeholder="粘贴 Civitai / HuggingFace 链接" style="flex:1;min-width:200px">
+          <input class="inp" id="src-input" aria-label="模型下载来源链接" data-app-draft-key="${esc(draftKey)}:source" placeholder="粘贴 Civitai / HuggingFace 链接" style="flex:1;min-width:200px">
           <button class="btn small primary" id="btn-save-src">绑定来源</button>
         </div>
       </div></div>
@@ -520,9 +605,9 @@
         ${Object.entries(hm).slice(0, 14).map(([k, v]) => kv(k, String(v).slice(0, 160))).join("")}
       </div></div></div>` : ""}
       <div class="dsec"><div class="t">${icon("bookmark",15)} 我的评价</div><div class="c">
-        <div class="stars" id="stars">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i =>
+        <div class="stars" id="stars" data-app-draft-key="${esc(draftKey)}:rating">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i =>
           `<span data-i="${i}" class="${i <= (m.rating || 0) ? "on" : ""}">★</span>`).join("")}</div>
-        <textarea class="ta" id="notes" placeholder="备注：用途、效果、待办…" style="margin-top:8px">${esc(m.notes || "")}</textarea>
+        <textarea class="ta" id="notes" aria-label="模型评价备注" data-app-draft-key="${esc(draftKey)}:notes" placeholder="备注：用途、效果、待办…" style="margin-top:8px">${esc(m.notes || "")}</textarea>
         <button class="btn small primary" id="btn-save-note" style="margin-top:8px">保存评价</button>
       </div></div>`);
 
@@ -530,31 +615,72 @@
     if(m.classification)$('#edit-classification').onclick=()=>openCategoryEditor([id],m.classification_options,m.classification,()=>{if(isCurrent())route();});
     $("#btn-copy-model").onclick = () => copyPath(m.audit?.runtime_path || m.path);
     $("#btn-reveal").onclick = () => api(`/api/model/${id}/reveal`, { body: {} }).then(() => toast("已在资源管理器中打开", "ok")).catch(e => toast(e.message, "err"));
-    $("#btn-resolve").onclick = async () => {
-      toast("正在识别来源…");
-      const r = await api(`/api/model/${id}/resolve-source`, { body: {} }).catch(e => ({ note: e.message }));
-      toast(r.url ? `识别到来源（${r.note}）：${r.url}` : `未识别：${r.note}`, r.url ? "ok" : "err");
-      if (r.url && isCurrent()) { $("#src-input").value = r.url; openModelDrawer(id); }
+    const sourceInput = $('#src-input'), notesInput = $('#notes'), stars = $('#stars');
+    let sourceRequest = 0;
+    const refreshSource = async () => {
+      const refresh = ++sourceRequest;
+      const latest = await api(`/api/model/${id}`);
+      if (!isCurrent() || refresh !== sourceRequest) return;
+      m = latest;
+      $('#model-source-info').innerHTML = sourceInfo(latest);
     };
-    $("#btn-check").onclick = async () => {
-      toast("正在检查更新…");
-      const r = await api(`/api/model/${id}/check`, { body: {} }).catch(e => ({ result: { message: e.message } }));
-      toast(r.result.message, r.result.state === "ok" ? "ok" : r.result.state === "error" ? "err" : "");
-      if (isCurrent()) openModelDrawer(id);
+    $('#btn-resolve').onclick = async () => {
+      const button = $('#btn-resolve'); button.disabled = true;
+      const before = sourceInput.value;
+      const snapshot = window.AIHubAppUpdate?.snapshotControls([sourceInput]);
+      toast('正在识别来源…');
+      try {
+        const r = await api(`/api/model/${id}/resolve-source`, { body: {} });
+        toast(r.url ? `识别到来源（${r.note}）：${r.url}` : `未识别：${r.note}`, r.url ? 'ok' : 'err');
+        const current = window.AIHubAppUpdate?.snapshotControls([sourceInput]);
+        const unchanged = !snapshot || snapshot.get(sourceInput.dataset.appDraftKey) === current?.get(sourceInput.dataset.appDraftKey);
+        if (r.url && isCurrent() && !before && sourceInput.value === before && unchanged) {
+          sourceInput.value = r.url;
+          window.AIHubAppUpdate?.edit(sourceInput);
+        }
+      } catch (e) { toast(e.message, 'err'); }
+      finally { button.disabled = false; }
     };
-    $("#btn-save-src").onclick = async () => {
-      const url = $("#src-input").value.trim();
-      await api(`/api/model/${id}/source`, { body: { url } });
-      toast("来源已绑定", "ok"); if (isCurrent()) openModelDrawer(id);
+    $('#btn-check').onclick = async () => {
+      const button = $('#btn-check'); button.disabled = true;
+      toast('正在检查更新…');
+      try {
+        const r = await api(`/api/model/${id}/check`, { body: {} });
+        toast(r.result.message, r.result.state === 'ok' ? 'ok' : r.result.state === 'error' ? 'err' : '');
+        if (isCurrent()) await refreshSource();
+      } catch (e) { toast(e.message, 'err'); }
+      finally { button.disabled = false; }
+    };
+    $('#btn-save-src').onclick = async () => {
+      const button = $('#btn-save-src'); button.disabled = true;
+      const url = sourceInput.value.trim();
+      const snapshot = window.AIHubAppUpdate?.snapshotControls([sourceInput]);
+      try {
+        await api(`/api/model/${id}/source`, { body: { url } });
+        if (snapshot) window.AIHubAppUpdate?.savedControls(snapshot);
+        toast('来源已绑定', 'ok');
+        if (isCurrent()) await refreshSource();
+      } catch (e) { toast(e.message, 'err'); }
+      finally { button.disabled = false; }
     };
     $$(".thumb-strip img", $("#drawer")).forEach(im => im.onclick = () => openLightbox(im.dataset.path, ""));
     $("#stars").onclick = e => {
-      if (e.target.dataset.i) $$("#stars span").forEach(s => s.classList.toggle("on", +s.dataset.i <= +e.target.dataset.i));
+      if (e.target.dataset.i) {
+        $$('span', stars).forEach(s => s.classList.toggle('on', +s.dataset.i <= +e.target.dataset.i));
+        window.AIHubAppUpdate?.edit(stars);
+      }
     };
     $("#btn-save-note").onclick = async () => {
-      const rating = $$("#stars span").filter(s => s.classList.contains("on")).length;
-      await api(`/api/model/${id}/edit`, { body: { rating, notes: $("#notes").value } });
-      toast("已保存", "ok");
+      const button = $('#btn-save-note'); button.disabled = true;
+      const rating = $$('span', stars).filter(s => s.classList.contains('on')).length;
+      const notes = notesInput.value;
+      const snapshot = window.AIHubAppUpdate?.snapshotControls([notesInput, stars]);
+      try {
+        await api(`/api/model/${id}/edit`, { body: { rating, notes } });
+        if (snapshot) window.AIHubAppUpdate?.savedControls(snapshot);
+        toast('已保存', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { button.disabled = false; }
     };
     if (restored) {
       if (restored.notes !== undefined) $('#notes').value = restored.notes;
@@ -575,7 +701,7 @@
         <div class="grid-cards">
           <div class="card"><div class="k">有新版本</div><div class="v upd-avail">${(s.available || 0) + (s.maybe || 0)}</div><div class="s">可考虑升级（黄色待确认）</div></div>
           <div class="card"><div class="k">已是最新</div><div class="v" style="color:var(--green)">${s.ok || 0}</div><div class="s">远端无更新</div></div>
-          <div class="card"><div class="k">未检查</div><div class="v">${(s.unchecked || 0) + (s.unknown || 0) + (s.error || 0)}</div><div class="s">点击右上角“检查更新”</div></div>
+          <div class="card"><div class="k">未检查</div><div class="v">${(s.unchecked || 0) + (s.unknown || 0) + (s.error || 0)}</div><div class="s">点击“检查模型版本”</div></div>
           <div class="card"><div class="k">上次检查</div><div class="v" style="font-size:14px">${esc(ov.update_check_at || "暂无记录")}</div><div class="s">限流间隔见设置</div></div>
         </div>
         <div class="panel" style="overflow-x:auto"><h3>⬆️ 待更新列表</h3><div class="body" style="padding:0">
@@ -587,7 +713,7 @@
           <td>${stateBadge(m.update_state)}${m.source_conf === "search" ? '<span class="badge">低置信</span>' : ""}</td>
           <td><button class="btn small model-link" data-id="${m.rowid_pk}">详情</button>
               ${m.source_url ? `<a class="btn small" href="${esc(m.source_url)}" target="_blank">打开来源</a>` : ""}</td>
-        </tr>`).join("") : `<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">当前没有待更新的模型。点击右上角“检查更新”开始全面检查。</td></tr>`}</tbody>
+        </tr>`).join("") : `<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">当前没有待更新的模型。点击“检查模型版本”查询已登记的模型来源。</td></tr>`}</tbody>
         </table></div></div>
         <div class="muted" style="font-size:12px">更新检查通过 Civitai / HuggingFace 公共 API，逐个间隔请求防止限流；大列表会在后台任务中运行，完成后自动刷新。</div>`;
       bindModelLinks(el);
@@ -641,7 +767,7 @@
   pages.images=(el,params=new URLSearchParams(),restored)=>{
     if(restored)Object.assign(imgState,restored);
     else if(params.has('model')||params.has('dir'))Object.assign(imgState,{model:params.get('model')||'',dir:params.get('dir')||'',q:'',page:1});
-    el.innerHTML=heading('出图图库','浏览作品、检查生成记录，整理不再需要的图片。','GALLERY')+`<div class="gallery-toolbar"><div class="gallery-title"><b id="image-total">读取图库…</b><span>本地出图</span></div><div class="gallery-density" role="group" aria-label="预览大小"><button data-density="comfortable" aria-label="大图预览" title="大图预览" class="${imgState.density==='comfortable'?'active':''}">${icon('overview',16)}</button><button data-density="compact" aria-label="紧凑预览" title="紧凑预览" class="${imgState.density==='compact'?'active':''}">${icon('grid',16)}</button></div></div><div class="filterbar gallery-filters"><input id="im-q" type="search" aria-label="搜索图片" placeholder="搜索文件名或提示词…" value="${esc(imgState.q)}"><input id="im-model" aria-label="按引用模型筛选" placeholder="筛选模型名称或路径" value="${esc(imgState.model)}"><select id="im-dir" aria-label="图片目录"><option value="">所有出图目录</option></select><select id="im-sort" aria-label="图片排序"><option value="newest" ${imgState.sort==='newest'?'selected':''}>最新在前</option><option value="oldest" ${imgState.sort==='oldest'?'selected':''}>最早在前</option></select><button class="btn ghost" id="im-clear">重置</button></div><div class="gallery ${imgState.density==='compact'?'compact':''}" id="image-grid"></div><div id="images-empty"></div><div id="images-pager"></div>`;
+    el.innerHTML=heading('素材管理','图片生成记录：回看样图、模型引用与提示词。其他媒体进入素材库查看。','MATERIAL LIBRARY')+AIHubMedia.tabs('images')+`<div class="gallery-toolbar"><div class="gallery-title"><b id="image-total">读取图库…</b><span>图片生成记录</span></div><div class="gallery-density" role="group" aria-label="预览大小"><button data-density="comfortable" aria-label="大图预览" title="大图预览" class="${imgState.density==='comfortable'?'active':''}">${icon('overview',16)}</button><button data-density="compact" aria-label="紧凑预览" title="紧凑预览" class="${imgState.density==='compact'?'active':''}">${icon('grid',16)}</button></div></div><div class="filterbar gallery-filters"><input id="im-q" type="search" aria-label="搜索图片" placeholder="搜索文件名或提示词…" value="${esc(imgState.q)}"><input id="im-model" aria-label="按引用模型筛选" placeholder="筛选模型名称或路径" value="${esc(imgState.model)}"><select id="im-dir" aria-label="图片目录"><option value="">所有出图目录</option></select><select id="im-sort" aria-label="图片排序"><option value="newest" ${imgState.sort==='newest'?'selected':''}>最新在前</option><option value="oldest" ${imgState.sort==='oldest'?'selected':''}>最早在前</option></select><button class="btn ghost" id="im-clear">重置</button></div><div class="gallery ${imgState.density==='compact'?'compact':''}" id="image-grid"></div><div id="images-empty"></div><div id="images-pager"></div>`;
     let sequence=0,dirsReady=false;
     const load=async()=>{
       const request=++sequence;
@@ -671,9 +797,10 @@
   pages.llm = (el) => {
     el.innerHTML = `<div class="muted">加载中…</div>`;
     return api("/api/llm").then(d => {
+      if(!el.isConnected)return;
       const groups = {};
       d.items.forEach(it => { (groups[it.mtype] = groups[it.mtype] || []).push(it); });
-      el.innerHTML = Object.entries(groups).map(([t, items]) => `
+      const contents = Object.entries(groups).map(([t, items]) => `
         <div class="panel" style="overflow-x:auto"><h3>${t === "LLM" ? "🧠 大语言模型" : t === "TTS" ? "🗣️ 语音模型" : "📦 模型包"}（${items.length}）</h3>
         <div class="body" style="padding:0"><table class="tbl">
           <thead><tr><th>文件</th><th>家族</th><th>量化</th><th>参数量</th><th>大小</th><th>位置</th><th>修改时间</th></tr></thead>
@@ -682,9 +809,10 @@
             <td>${esc(m.quant || "-")}</td><td>${esc(m.params || "-")}</td>
             <td class="num">${m.size_h}</td><td class="muted mono" title="${esc(m.path)}" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.path)}</td>
             <td class="muted">${fmtDate(m.mtime)}</td></tr>`).join("")}</tbody></table></div></div>`).join("")
-        || `<div class="muted">未发现大模型文件</div>`;
+        || empty('当前扫描范围暂无语言模型、语音模型或模型包','在工作区设置中登记实际模型目录，再刷新索引。图片和视频模型可到全部模型查看。')+'<a class="btn primary" href="#/workspace">管理模型来源</a><a class="btn" href="#/models">浏览全部模型</a>';
+      el.innerHTML=heading('语言与语音','模型管理中的语言模型、语音模型与完整模型包。','MODEL MANAGEMENT')+contents;
       bindModelLinks(el);
-    }).catch(e => el.innerHTML = `<div class="badge b-red">${esc(e.message)}</div>`);
+    }).catch(e => {if(el.isConnected)failPage(el,e);});
   };
 
   // ================= 文件总览 =================
@@ -696,8 +824,8 @@
       if (!el.isConnected) return;
       fileState.path = d.path;
       const catIcon = { image: "🖼️", video: "🎬", audio: "🎵", model: "🧩", workflow: "🔀", doc: "📄", code: "💻", archive: "🗜️" };
-      el.innerHTML = `
-        <div class="filterbar"><input id="fs-q" placeholder="全盘搜索文件名…" style="width:280px"><span id="fs-results"></span></div>
+      el.innerHTML = heading('文件空间','按实际目录浏览工作区文件；按媒体类型查看素材请进入素材管理。','WORKSPACE FILES')+`
+        <div class="filterbar"><input id="fs-q" type="search" aria-label="搜索已索引文件" placeholder="搜索已索引的文件名…" style="width:280px"></div><div id="fs-results" aria-live="polite"></div>
         <div class="crumbs">${(d.crumb || []).map((c, i) =>
           `<a data-path="${esc(c.path)}">${esc(c.name)}</a>${i < d.crumb.length - 1 ? " › " : ""}`).join("")}</div>
         ${d.dir ? `<div class="muted" style="margin-bottom:10px">本目录 ${d.dir.file_count} 文件 · ${fmtSize(d.dir.size)} · ${d.dir.dir_count} 子目录</div>` : ""}
@@ -716,27 +844,36 @@
       $$(".dircell", el).forEach(c => c.onclick = () => nav("files", { path: c.dataset.path }));
       $$(".crumbs a", el).forEach(c => c.onclick = () => nav("files", { path: c.dataset.path }));
       $$("[data-view]", el).forEach(a => a.onclick = ev => { ev.preventDefault(); openLightbox(a.dataset.view, ""); });
+      let searchSequence=0;
       const search = async () => {
         if (!el.isConnected) return;
         const term = $("#fs-q", el).value.trim();
+        const request=++searchSequence;
         if (term.length < 2) { $("#fs-results", el).innerHTML = ""; return; }
+        $("#fs-results",el).innerHTML='<p role="status" class="caption-note">正在搜索已索引文件…</p>';
+        try {
         const r = await api("/api/files/search?q=" + encodeURIComponent(term));
-        if (!el.isConnected || $("#fs-q", el).value.trim() !== term) return;
+        if (!el.isConnected || request!==searchSequence || $("#fs-q", el).value.trim() !== term) return;
         $("#fs-results", el).innerHTML = `<div class="panel" style="margin:0;width:100%;max-height:420px;overflow-y:auto"><div class="body" style="padding:0">
           <table class="tbl"><tbody>${r.items.map(f => `<tr class="rowbtn" data-path="${esc(f.path)}">
             <td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td>
             <td class="muted mono" style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.path)}</td></tr>`).join("") || '<tr><td class="muted">无结果</td></tr>'}</tbody></table></div></div>`;
         $$("#fs-results .rowbtn", el).forEach(row => row.onclick = () => {
           const p = row.dataset.path;
-          if (/\.(png|jpg|jpeg|webp)$/i.test(p)) openLightbox(p, ""); else nav("files", { path: p.replace(/\\[^\\]+$/, "") });
+          if (/\.(png|jpg|jpeg|webp)$/i.test(p)) openLightbox(p, ""); else nav("files", { path: p.replace(/[\\/][^\\/]+$/, "") });
         });
+        }catch(error){
+          if(!el.isConnected || request!==searchSequence || $('#fs-q',el).value.trim()!==term)return;
+          $('#fs-results',el).innerHTML=`<div class="page-error" role="alert"><p>搜索未完成：${esc(error.message)}</p><button class="btn small" id="fs-search-retry">重新搜索</button></div>`;
+          $('#fs-search-retry',el).onclick=search;
+        }
       };
       $("#fs-q", el).oninput = debounce(search, 400);
       if (restored?.query) { $("#fs-q", el).value = restored.query; await search(); }
     }).catch(e => el.innerHTML = `<div class="badge b-red">${esc(e.message)}（路径可能不存在）</div>`);
   };
 
-  pages.reports=AIHubWorkcenter.createReports({api,heading,copyPath,
+  pages.reports=AIHubWorkcenter.createReports({api,heading,copyPath,openModal,closeModal,
     registerKnowledge:async(active)=>{const snapshot=await api('/api/registry');if(!active())return;AIHubRegistry.editor(registryEnv,'knowledge',{},snapshot,route);},
     generateReport:async(active)=>{const r=await api('/api/report/generate',{body:{}});if(!active())return;toast('索引报告已生成','ok');nav('reports',{path:r.path});}
   });
@@ -764,7 +901,7 @@
   };
 
   // ================= 设置 =================
-  pages.settings = (el) => {
+  pages.settings = (el, params, restored) => {
     el.innerHTML = `<div class="muted">加载中…</div>`;
     return api("/api/settings").then(c => {
       el.innerHTML = `
@@ -791,28 +928,68 @@
           <button class="btn" id="s-rescan">⟳ 立即重新扫描（文件 + 出图分析）</button>
           <span class="muted" style="margin-left:10px">SQLite 数据库位于 ai-hub/data/aihub.db</span>
         </div></div>`;
-      let detected=null;
-      $('#s-root',el).oninput=()=>{detected=null;};
+      const cached = settingsDrafts.get(c.ai_root);
+      if (cached) restored = cached;
+      if (restored && Object.hasOwn(restored, 'owner') && restored.owner !== c.ai_root) restored = null;
+      if (restored && Object.hasOwn(restored, 'scope')) {
+        const versions = window.AIHubAppUpdate?.snapshotControls(Object.keys(restored.values || {}).map(id => ({dataset:{appDraftKey:`settings:${restored.scope}:${id}`}})));
+        if (!versions || ![...versions.values()].some(version => version !== undefined)) restored = null;
+      }
+      el.dataset.appDraftWorkspace = c.ai_root;
+      el.dataset.appDraftScope = restored?.scope || c.ai_root;
+      $$('input,textarea', el).forEach(control => { control.dataset.appDraftKey = `settings:${el.dataset.appDraftScope}:${control.id}`; });
+      if (restored?.values) {
+        for (const [id, value] of Object.entries(restored.values)) {
+          const control = $('#' + id, el);
+          if (control?.dataset.appDraftKey) control.value = value;
+        }
+      }
+      let detected=restored?.detected || null;
+      el.appSettingsDetected = detected;
+      $('#s-root',el).oninput=()=>{detected=null;el.appSettingsDetected=null;};
       $('#s-detect',el).onclick=async()=>{
         const button=$('#s-detect',el);button.disabled=true;
-        try{detected=await api('/api/settings/detect',{body:{ai_root:$('#s-root',el).value.trim()}});if(!el.isConnected)return;$('#s-root',el).value=detected.ai_root;$('#s-roots',el).value=JSON.stringify(detected.scan_roots,null,1);$('#s-outputs',el).value=JSON.stringify(detected.output_roots,null,1);toast('已填充扫描范围，保存设置后生效','ok');}
+        const targets = ['s-root', 's-roots', 's-outputs'].map(id => $('#' + id, el));
+        const before = targets.map(control => control.value);
+        try {
+          const result = await api('/api/settings/detect', {body:{ai_root:targets[0].value.trim()}});
+          if (!el.isConnected) return;
+          if (targets.some((control, i) => control.value !== before[i])) {
+            toast('探测期间目录已修改，请重新探测以保留当前输入', 'err');
+            return;
+          }
+          detected = result;
+          el.appSettingsDetected = result;
+          const values = [result.ai_root, JSON.stringify(result.scan_roots, null, 1), JSON.stringify(result.output_roots, null, 1)];
+          targets.forEach((control, i) => { control.value = values[i]; window.AIHubAppUpdate?.edit(control); });
+          toast('已填充扫描范围，保存设置后生效', 'ok');
+        }
         catch(e){toast(e.message,'err');}finally{button.disabled=false;}
       };
       $("#s-save", el).onclick = async () => {
         let roots, outputs;
-        try { roots = JSON.parse($("#s-roots").value); } catch { return toast("扫描根不是合法 JSON", "err"); }
-        try { outputs = JSON.parse($("#s-outputs").value); } catch { return toast("输出目录不是合法 JSON", "err"); }
-        await api("/api/settings", { body: {
-          ai_root: $("#s-root").value.trim(),
+        try { roots = JSON.parse($("#s-roots", el).value); } catch { return toast("扫描根不是合法 JSON", "err"); }
+        try { outputs = JSON.parse($("#s-outputs", el).value); } catch { return toast("输出目录不是合法 JSON", "err"); }
+        const button = $('#s-save', el); button.disabled = true;
+        const snapshot = window.AIHubAppUpdate?.snapshot(el);
+        const body = {
+          ai_root: $("#s-root", el).value.trim(),
           scan_roots: roots, output_roots: outputs,
           ...(detected?{aliases:detected.aliases,catalog_dir:detected.catalog_dir}:{}),
-          ignore_dirs: $("#s-ignore").value.split(",").map(s => s.trim()).filter(Boolean),
-          network: { civitai_base: $("#s-cbase").value.trim(), civitai_token: $("#s-token").value.trim(),
-                     hf_base: $("#s-hbase").value.trim(), proxy: $("#s-proxy").value.trim(),
-                     request_interval: parseFloat($("#s-interval").value) || 1.2 },
-        }});
-        window.AIHubAppUpdate?.saved(el);
-        toast("设置已保存，可以刷新索引读取资产", "ok");
+          ignore_dirs: $("#s-ignore", el).value.split(",").map(s => s.trim()).filter(Boolean),
+          network: { civitai_base: $("#s-cbase", el).value.trim(), civitai_token: $("#s-token", el).value.trim(),
+                     hf_base: $("#s-hbase", el).value.trim(), proxy: $("#s-proxy", el).value.trim(),
+                     request_interval: parseFloat($("#s-interval", el).value) || 1.2 },
+        };
+        try {
+          await api('/api/settings', {body});
+          if (snapshot) window.AIHubAppUpdate?.saved(el, snapshot);
+          settingsDrafts.delete(el.dataset.appDraftWorkspace);
+          el.dataset.appDraftWorkspace = body.ai_root;
+          captureSettingsDraft(el);
+          toast('设置已保存，可以刷新索引读取资产', 'ok');
+        } catch (e) { toast(e.message, 'err'); }
+        finally { button.disabled = false; }
       };
       $("#s-rescan", el).onclick = async () => {
         try { await api("/api/scan/start", { body: {} }); toast("扫描已开始，可看左上角进度", "ok"); }
@@ -843,6 +1020,7 @@
     sync();
   }
   bindBrandMotion(document);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)$$('#lightbox video, #lightbox audio').forEach(media=>media.pause());});
   AIHubContextMenu.install({document, window, api, openDetails: openModelDrawer,
     clipboard: navigator.clipboard, toast, navigation,
     openWorkflowFolder: path => api('/api/context/reveal', {body:{kind:'workflow',path}}),

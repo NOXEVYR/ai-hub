@@ -86,6 +86,10 @@ class WorkcenterHTTP(unittest.TestCase):
         self.assertEqual(self.request('/api/workcenter/document?id=unknown')[0], 400)
         code, projects = self.request('/api/workcenter/projects')
         self.assertEqual(code, 200, projects)
+        self.assertEqual(projects['total'], 0)
+        self.assertEqual(projects['counts']['candidate'], 1)
+        code, projects = self.request('/api/workcenter/projects?project_id=' + document['project_id'])
+        self.assertEqual(code, 200, projects)
         self.assertTrue(any(p['id'] == document['project_id'] for p in projects['items']))
 
     def test_capability_discovery_dispatch_uses_existing_task_ownership_and_report_contract(self):
@@ -120,7 +124,7 @@ class WorkcenterHTTP(unittest.TestCase):
         claim = call('task_claim', {'task_id': task['id'], 'client_id': 'worker-codex'})
         owned = {'task_id': task['id'], 'client_id': 'worker-codex', 'lease_token': claim['lease_token']}
         artifact = call('artifact_write', {**owned, 'kind': 'report', 'title': '调度结果',
-                        'filename': '结果.md', 'content': '已完成测试任务，未调用外部模型。'})
+                        'filename': '结果.md', 'content': '已完成测试任务，未调用外部模型。', 'category': 'report', 'memory_candidates': []})
         self.assertTrue(Path(artifact['path']).is_relative_to(Path(task['paths']['reports'])))
         call('task_finish', {**owned, 'summary': '测试闭环完成'})
 

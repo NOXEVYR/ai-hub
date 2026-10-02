@@ -6,6 +6,7 @@ import re
 import stat
 
 from . import config
+from . import environment_inventory
 
 MAX_ROOTS = 48
 MAX_ENTRIES = 4096
@@ -13,6 +14,7 @@ MAX_PLUGIN_DEPTH = 8
 MAX_SUGGESTIONS = 512
 MAX_DECLARATION_FILES = MAX_ROOTS
 MAX_DECLARATION_BYTES = 128 * 1024
+MAX_DECLARATION_RECORDS = 128
 _SECRET_VALUE = re.compile(
     r'(?:Bearer\s+[A-Za-z0-9._~-]{12,}|sk-[A-Za-z0-9_-]{16,}|'
     r'https?://[^\s/@]+:[^\s/@]+@|[?&](?:api_key|token|secret)=)', re.I)
@@ -215,19 +217,35 @@ def _read_skill(path, tool):
         if handle.readline(1025).strip() != '---':
             return None
         meta, total, closed = {}, 0, False
+        block_key, block_style, block_lines = None, None, []
+
+        def finish_block():
+            if block_key:
+                separator = ' ' if block_style == '>' else '\n'
+                meta[block_key] = _clean_text(separator.join(block_lines), 160 if block_key == 'name' else 2000)
+
         for _ in range(40):
             line = handle.readline(2049)
             total += len(line)
             if total > 8192 or len(line) > 2048:
                 raise ValueError('frontmatter over limit')
             if line.strip() == '---':
+                finish_block()
                 closed = True
                 break
+            if block_key:
+                if not line.strip() or line[0].isspace():
+                    block_lines.append(line.strip())
+                    continue
+                finish_block()
+                block_key, block_style, block_lines = None, None, []
             match = re.match(r'^(name|description):\s*(.*)$', line)
             if match:
-                raw = match.group(2).strip().strip('"\'')
-                if raw not in {'|', '>', '|-', '>-'}:
-                    meta[match.group(1)] = _clean_text(raw, 160 if match.group(1) == 'name' else 2000)
+                raw = match.group(2).strip()
+                if re.fullmatch(r'[|>][+-]?', raw):
+                    block_key, block_style, block_lines = match.group(1), raw[0], []
+                else:
+                    meta[match.group(1)] = _clean_text(raw.strip('"\''), 160 if match.group(1) == 'name' else 2000)
         if not closed or not meta.get('name'):
             return None
     categories = _category(meta.get('name', ''), meta.get('description', ''))
@@ -578,8 +596,10 @@ def _declared_interfaces(cfg):
             records = manifest.get('capabilities', [])
             if not isinstance(records, list):
                 continue
-            source['status'] = 'scanned'
-            for record in records[:128]:
+            source['status'] = 'truncated_budget' if len(records) > MAX_DECLARATION_RECORDS else 'scanned'
+            source['records_total'] = len(records)
+            source['records_skipped'] = max(0, len(records) - MAX_DECLARATION_RECORDS)
+            for record in records[:MAX_DECLARATION_RECORDS]:
                 if not isinstance(record, dict) or set(record) - {
                         'name', 'description', 'domain', 'domains', 'provider', 'operation_id', 'tags', 'env_vars'}:
                     continue
@@ -661,39 +681,55 @@ def _declared_capabilities(items):
     return interfaces
 
 
-def _credentials(environ=None, associations=None):
-    names = {name.casefold() for name in (os.environ if environ is None else environ)}
+def _credentials(environ=None, associations=None, inventory=None, persistent_sources=None):
+    runtime_names = environment_inventory.snapshot_names(os.environ if environ is None else environ)['names']
+    persistent_sources = (environment_inventory.persistent_name_sources()
+                          if persistent_sources is None else persistent_sources)
+    inventory = inventory if inventory is not None else environment_inventory.build_inventory(
+        runtime_names, persistent_sources, associations or (), _CREDENTIAL_HINTS)
+    names_by_source = {'process': {name.casefold(): name for name in runtime_names}}
+    for source in persistent_sources:
+        safe_names = environment_inventory.snapshot_names(source.get('names', []), source['id'],
+                                                         source.get('status', 'unavailable'))['names']
+        names_by_source[source['id']] = {name.casefold(): name for name in safe_names}
     by_name, manifest_associations = {}, set()
     for name, provider in _CREDENTIAL_HINTS.items():
-        by_name[name] = {'name': name, 'provider': provider, 'provider_hint': provider,
+        by_name[name.casefold()] = {'name': name, 'provider': provider, 'provider_hint': provider,
                          'domains': [], 'tools': [], 'tool': '', 'target_tool': '',
-                         'present': name.casefold() in names, 'value_included': False,
+                         'value_included': False,
                          'capability_inferred': False, 'source': 'environment_variable_name_only',
                          'discovery_only': True}
     for association in associations or []:
         name = association['name']
-        manifest_associations.add(name)
-        item = by_name.setdefault(name, {'name': name, 'provider': association.get('provider', ''),
+        manifest_associations.add(name.casefold())
+        item = by_name.setdefault(name.casefold(), {'name': name, 'provider': association.get('provider', ''),
             'provider_hint': association.get('provider', ''), 'domains': [], 'tools': [],
-            'tool': '', 'target_tool': '', 'present': name.casefold() in names,
+            'tool': '', 'target_tool': '',
             'value_included': False, 'capability_inferred': False,
             'source': 'explicit_manifest_variable_name', 'discovery_only': True})
         item['domains'] = sorted(set(item['domains']) | set(association.get('domains', [])))
         item['tools'] = sorted(set(item['tools']) | set(association.get('tools', [])))
+    for candidate in inventory['items']:
+        by_name.setdefault(candidate['name'].casefold(), dict(candidate, tool='', target_tool='',
+                          source='environment_variable_name_only'))
     result = list(by_name.values())
     for item in result:
-        item['next_step'] = '在对应工具设置中确认服务与权限；变量存在本身不代表接口已配置或可调用。'
-        associated = item['name'] in manifest_associations
-        item['evidence'] = {
+        item.update(environment_inventory.name_presence(item['name'], names_by_source, inventory['sources']))
+        item['present'] = item['runtime_available']
+        associated = item['name'].casefold() in manifest_associations
+        item['association_status'] = ('manifest_declared' if associated else 'known_name_hint'
+                                      if item['name'] in _CREDENTIAL_HINTS else 'unassociated')
+        item['next_step'] = ('此名称已在 Windows 持久环境配置；重新启动曜核后再检查进程名称。'
+                             if item['needs_restart'] else
+                             '通过公开 manifest 明确关联用途，再在对应工具确认协议连接与调用；变量存在不代表可调用。')
+        item['evidence'].update({
             'source': {'status': 'manifest_declared' if associated else 'variable_name_candidate',
-                       'type': 'explicit_public_manifest' if associated else 'environment_variable_name_only'},
-            'configuration': {'status': 'required_by_manifest' if associated else 'not_established',
+                       'type': 'explicit_public_manifest' if associated else 'environment_variable_name_only',
+                       'sources': item['sources']},
+            'association': {'status': 'required_by_manifest' if associated else 'not_established',
                               'evidence': 'The manifest declares this variable name; its value was not read.' if associated
                               else 'Only the environment variable name was checked.'},
-            'callability': {'status': 'not_established',
-                            'evidence': 'Variable presence does not establish provider configuration or callability.'},
-            'actual_invocation': {'status': 'not_observed', 'evidence': 'No call was performed or inferred.'},
-        }
+        })
     return result
 
 
@@ -723,7 +759,7 @@ def _merge_tool_scoped(items):
     return merged
 
 
-def discover(cfg, roots, capability_loader, environ=None):
+def discover(cfg, roots, capability_loader, environ=None, persistent_sources=None):
     """Return compatible Skill suggestions and separated interface/credential evidence."""
     suggestions, sources, skipped, examined, plugin_interfaces = [], [], 0, 0, []
     normalized = list(roots or []) + configured_skill_roots(cfg)
@@ -774,17 +810,29 @@ def discover(cfg, roots, capability_loader, environ=None):
                     'items_found': len(registered)})
     suggestions = _merge_tool_scoped(suggestions)
     interfaces = _merge_tool_scoped(_declared_capabilities(registered) + declared + plugin_interfaces)
+    runtime_snapshot = environment_inventory.snapshot_names(os.environ if environ is None else environ)
+    runtime_names = runtime_snapshot['names']
+    persistent_sources = (environment_inventory.persistent_name_sources()
+                          if persistent_sources is None else persistent_sources)
+    inventory = environment_inventory.build_inventory(runtime_names, persistent_sources,
+                                                      env_associations, _CREDENTIAL_HINTS)
+    inventory['sources'][0].update({key: value for key, value in runtime_snapshot.items() if key != 'names'})
+    inventory['truncated'] = inventory['truncated'] or runtime_snapshot['status'] == 'truncated_budget'
+    sources.extend(inventory['sources'])
     return {
         'suggestions': suggestions, 'interfaces': interfaces,
-        'credentials': _credentials(environ, env_associations),
-        'sources': sources, 'skipped': skipped,
+        'credentials': _credentials(runtime_names, env_associations, inventory, persistent_sources),
+        'environment_inventory': inventory,
+        'sources': sources, 'skipped': skipped + sum(source.get('records_skipped', 0) for source in declaration_sources),
         'truncated': (len(normalized) > MAX_ROOTS or examined >= MAX_ENTRIES or
                       len(suggestions) >= MAX_SUGGESTIONS or
-                      any(source.get('status') == 'truncated_budget' for source in declaration_sources)),
+                      any(source.get('status') == 'truncated_budget' for source in declaration_sources) or
+                      inventory['truncated']),
         'published': False,
         'limitations': [
             '本机发现只读元数据，不执行 Skill、接口或模型调用。',
             '环境变量状态只表示变量名是否存在；不会读取或返回变量值，也不代表接口可调用。',
+            'Windows 持久环境名称与进程快照分别记录；刷新不会注入变量值，名称差异可能需要重新启动曜核。',
             '配置、可排队路由和实际调用证据分别显示；发现结果不会自动发布或进入派单。',
         ],
     }

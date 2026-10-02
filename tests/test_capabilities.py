@@ -239,7 +239,7 @@ class CapabilityTests(unittest.TestCase):
         lease = collaboration.execute(self.cfg, 'task_claim', {'task_id': task['id'], 'client_id': 'alice'})
         args = {'task_id': task['id'], 'client_id': 'alice', 'lease_token': lease['lease_token']}
         artifact = collaboration.execute(self.cfg, 'artifact_write', dict(args, kind='report',
-                 title='隔离测试报告', filename='result.md', content='合成输出'))
+                 title='隔离测试报告', filename='result.md', content='合成输出', category='report', memory_candidates=[]))
         self.assertTrue(Path(artifact['path']).is_file())
         finished = collaboration.execute(self.cfg, 'task_finish', dict(args, summary='测试完成'))
         self.assertEqual(finished['status'], 'completed')
@@ -296,6 +296,42 @@ class CapabilityTests(unittest.TestCase):
         link.unlink()
         with patch.object(config, '_is_reparse', return_value=True), self.assertRaises(ValueError):
             cap.catalog(self.cfg)
+
+    def test_multiline_skill_descriptions_preserve_domain_discovery_without_body(self):
+        root = self.base / 'multiline-skills'
+        root.mkdir()
+        for index, marker in enumerate(('>', '|', '>-', '|-', '>+', '|+')):
+            folder = root / str(index)
+            folder.mkdir()
+            (folder / 'SKILL.md').write_text(
+                f'---\nname: studio-{index}\ndescription: {marker}\n  Generate video and image\n  for a creative project.\nmetadata:\n  ignored: private\n---\nNEVER_READ_BODY', encoding='utf-8')
+        result = discovery.discover({'capability_sources': [
+            {'tool': 'custom', 'kind': 'skills_root', 'path': str(root)}]}, [], lambda _cfg: {}, environ={})
+        self.assertEqual(len(result['suggestions']), 6)
+        for item in result['suggestions']:
+            self.assertEqual(item['domains'], ['image', 'video'])
+            self.assertIn('creative project', item['description'])
+            self.assertNotIn('private', item['description'])
+            self.assertNotIn('NEVER_READ_BODY', str(item))
+
+    def test_multiline_skill_metadata_keeps_secret_and_size_guards(self):
+        path = self.base / 'SKILL.md'
+        for text in ('Bearer ' + 'x' * 40, 'x' * 2001):
+            path.write_text('---\nname: media\ndescription: >\n  ' + text + '\n---\n', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                discovery._read_skill(path, 'custom')
+
+    def test_interface_record_limit_is_reported_in_source_and_discovery(self):
+        manifest = self.base / 'overflow.capabilities.json'
+        manifest.write_text(json.dumps({'capabilities': [
+            {'name': f'video-{i}', 'domain': 'video'} for i in range(129)]}), encoding='utf-8')
+        result = discovery.discover({'capability_definition_files': [str(manifest)]}, [], lambda _cfg: {}, environ={})
+        self.assertEqual(len(result['interfaces']), 128)
+        source = next(x for x in result['sources'] if x['type'] == 'explicit_capability_manifest')
+        self.assertEqual(source['status'], 'truncated_budget')
+        self.assertEqual(source['records_skipped'], 1)
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['skipped'], 1)
 
     def test_discovery_metadata_only_bounded_and_not_published(self):
         root = self.base / 'skills'
@@ -384,6 +420,59 @@ class CapabilityTests(unittest.TestCase):
         self.assertFalse(credential['capability_inferred'])
         self.assertNotIn(secret, json.dumps(result, ensure_ascii=False))
         self.assertEqual(result['interfaces'], [])
+
+    def test_environment_inventory_preserves_runtime_presence_and_exposes_persistent_custom_names(self):
+        sources = [
+            {'id': 'windows_user', 'status': 'scanned', 'names': ['MY_PRIVATE_SERVICE_KEY', 'DASHSCOPE_API_KEY']},
+            {'id': 'windows_system', 'status': 'scanned', 'names': ['MACHINE_TOOL_SETTING']},
+        ]
+        result = discovery.discover({}, [], lambda _cfg: {}, environ={'RUNTIME_ONLY': 'NEVER_RETURN_VALUE'},
+                                    persistent_sources=sources)
+        known = next(item for item in result['credentials'] if item['name'] == 'DASHSCOPE_API_KEY')
+        self.assertFalse(known['present'])
+        self.assertFalse(known['runtime_available'])
+        self.assertTrue(known['configured_in_system'])
+        self.assertTrue(known['needs_restart'])
+        custom = next(item for item in result['credentials'] if item['name'] == 'MY_PRIVATE_SERVICE_KEY')
+        self.assertEqual(custom['association_status'], 'unassociated')
+        self.assertEqual(custom['provider'], '')
+        self.assertEqual(custom['domains'], [])
+        self.assertEqual(custom['tools'], [])
+        self.assertEqual(custom['sources'], ['windows_user'])
+        runtime = next(item for item in result['credentials'] if item['name'] == 'RUNTIME_ONLY')
+        self.assertTrue(runtime['present'])
+        self.assertFalse(runtime['configured_in_system'])
+        self.assertEqual(result['environment_inventory']['total'], 4)
+        self.assertEqual(result['environment_inventory']['returned'], 4)
+        self.assertFalse(result['environment_inventory']['value_included'])
+        self.assertNotIn('NEVER_RETURN_VALUE', json.dumps(result))
+        self.assertEqual(result['interfaces'], [])
+
+    def test_manifest_association_survives_persistent_only_name_and_failure_is_unknown(self):
+        manifest = self.base / 'custom.capabilities.json'
+        manifest.write_text(json.dumps({'capabilities': [{'name': 'Explicit audio interface',
+            'domains': ['audio'], 'provider': 'Example', 'env_vars': ['CUSTOM_SPEECH_KEY']}]}), encoding='utf-8')
+        cfg = {'capability_sources': [{'tool': 'custom-audio', 'kind': 'capability_manifest', 'path': str(manifest)}]}
+        sources = [{'id': 'windows_user', 'status': 'scanned', 'names': ['custom_speech_key']},
+                   {'id': 'windows_system', 'status': 'unavailable', 'names': [], 'error_code': 5}]
+        result = discovery.discover(cfg, [], lambda _cfg: {}, environ={}, persistent_sources=sources)
+        credential = next(item for item in result['credentials'] if item['name'] == 'CUSTOM_SPEECH_KEY')
+        self.assertEqual(credential['association_status'], 'manifest_declared')
+        self.assertEqual(credential['domains'], ['audio'])
+        self.assertEqual(credential['tools'], ['custom-audio'])
+        self.assertFalse(credential['present'])
+        self.assertTrue(credential['configured_in_system'])
+        self.assertTrue(credential['needs_restart'])
+        absent = next(item for item in result['credentials'] if item['name'] == 'OPENAI_API_KEY')
+        self.assertIsNone(absent['configured_in_system'])
+        self.assertFalse(absent['needs_restart'])
+
+    def test_runtime_snapshot_budget_remains_visible_in_discovery(self):
+        with patch.object(discovery.environment_inventory, 'MAX_SOURCE_NAMES', 2):
+            result = discovery.discover({}, [], lambda _cfg: {}, environ=['ONE', 'TWO', 'THREE'],
+                                        persistent_sources=[])
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['environment_inventory']['sources'][0]['status'], 'truncated_budget')
 
     def test_discovery_source_settings_accept_custom_tools_and_reject_unsafe_paths(self):
         root = self.base / 'skills-custom'

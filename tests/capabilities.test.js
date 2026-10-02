@@ -4,6 +4,31 @@ const cap={id:'c1',name:'视频生成',kind:'mcp_tool',provider:'Video Service',
 function harness(handler){const nodes=new Map(),requests=[];const get=s=>{if(!nodes.has(s))nodes.set(s,{value:'',textContent:'',innerHTML:'',disabled:false,hidden:false,dataset:{},focus(){}});return nodes.get(s);};const el={isConnected:true,dataset:{},innerHTML:'',classList:{add(){}},querySelector:get,querySelectorAll:()=>[]};const api=async(url,opts)=>{requests.push({url,body:opts?.body});if(handler){const v=await handler(url,opts?.body);if(v!==undefined)return v;}if(url==='/api/harnesses')return{items:[{id:'codex',name:'Codex',enabled:true,connection_mode:'mcp_stdio'}]};if(url.endsWith('/list'))return{items:[cap],root:'D:/Studio'};if(url.endsWith('/recommend'))return{items:[{...cap,reasons:['声明场景匹配：video']}]};if(url.endsWith('/dispatch'))return{status:'queued',task:{id:'task1',title:'任务'}};return{suggestions:[]};};return{el,requests,key:id=>get('#cp-'+id),page:ui.createPage({api})};}
 const submit=()=>({preventDefault(){}});
 
+test('catalog refresh failure freezes stale dispatch while preserving drafts and recovers on retry',async()=>{
+  let failing=false;
+  const h=harness(url=>{if(failing&&url.endsWith('/list'))throw Error('目录读取失败');});
+  await h.page(h.el,new URLSearchParams(),{selected:'c1',root:'D:/Studio'});
+  h.key('project').value='Film';h.key('title').value='保留任务';h.key('inputs').value='{"prompt":"保留"}';
+  assert.equal(h.key('dispatch').disabled,false);
+  failing=true;await h.key('refresh').onclick();
+  assert.equal(h.key('dispatch').disabled,true);assert.equal(h.key('match').disabled,true);
+  assert.match(h.key('list').innerHTML,/等待目录刷新/);assert.match(h.key('list-caption').textContent,/目录未验证/);
+  await h.key('dispatch-form').onsubmit(submit());
+  assert(!h.requests.some(r=>r.url.endsWith('/dispatch')));assert.equal(h.key('title').value,'保留任务');
+  failing=false;await h.key('refresh').onclick();
+  assert.equal(h.key('dispatch').disabled,false);assert.equal(h.key('inputs').value,'{"prompt":"保留"}');
+});
+
+test('in-flight catalog refresh immediately blocks dispatch from the old snapshot',async()=>{
+  let resolve,pending=false;
+  const h=harness(url=>pending&&url.endsWith('/list')?new Promise(r=>{resolve=r;}):undefined);
+  await h.page(h.el,new URLSearchParams(),{selected:'c1',root:'D:/Studio'});
+  pending=true;const refreshing=h.key('refresh').onclick();
+  assert.equal(h.key('dispatch').disabled,true);
+  resolve({items:[cap],root:'D:/Studio'});await refreshing;
+  assert.equal(h.key('dispatch').disabled,false);
+});
+
 test('optional work-end templates never become capability filters or dispatch targets in a fresh workspace',async()=>{
   const h=harness(url=>url==='/api/harnesses'?{items:[],templates:[{id:'codex',name:'Codex'}]}:url.endsWith('/list')?{items:[],root:'D:/Studio'}:undefined);await h.page(h.el);
   assert(!h.key('tool').innerHTML.includes('codex'));assert.equal(h.key('dispatch').disabled,true);assert(!h.requests.some(r=>r.url.endsWith('/dispatch')));
@@ -32,4 +57,17 @@ test('successful dispatch clears only its submitted title and preserves the next
   resolve({task:{id:'queued-task',title:'submitted title'}});await pending;
   assert.equal(h.requests.find(r=>r.url.endsWith('/dispatch')).body.title,'submitted title');assert.equal(h.key('title').value,'next title');assert.equal(h.key('project').value,'NextFilm');assert.equal(h.key('inputs').value,'{"prompt":"next"}');
   assert.match(h.key('result').innerHTML,/submitted title/);
+});
+
+
+test('dispatch protection excludes catalog filters and retains JSON edited while the earlier task queues',async()=>{
+  const old=globalThis.AIHubAppUpdate,events={},win={document:{addEventListener:(id,fn)=>events[id]=fn,getElementById:()=>null}};
+  require('../frontend/app-update.js').mount(win);globalThis.AIHubAppUpdate=win.AIHubAppUpdate;
+  try{
+    let resolve,delay=true;const h=harness(url=>url.endsWith('/dispatch')&&delay?new Promise(yes=>resolve=yes):undefined);await h.page(h.el,new URLSearchParams(),{selected:'c1',root:'D:/Studio'});
+    const edit=(id,scope)=>{const control=h.key(id);control.matches=()=>true;control.closest=selector=>selector==='[data-app-draft-scope]'&&scope?h.key('dispatch-form'):null;events.input({target:control});};
+    h.key('domain').value='video';edit('domain',false);assert(!win.aiHubHasUnsavedChanges());h.key('project').value='Film';h.key('title').value='Title';h.key('inputs').value='{"prompt":"submitted"}';edit('inputs',true);
+    const pending=h.key('dispatch-form').onsubmit(submit());h.key('inputs').value='{"prompt":"newer"}';edit('inputs',true);resolve({task:{id:'queued'}});await pending;assert(win.aiHubHasUnsavedChanges());assert.equal(h.key('inputs').value,'{"prompt":"newer"}');
+    delay=false;h.key('title').value='New title';await h.key('dispatch-form').onsubmit(submit());assert(!win.aiHubHasUnsavedChanges());
+  }finally{if(old===undefined)delete globalThis.AIHubAppUpdate;else globalThis.AIHubAppUpdate=old;}
 });

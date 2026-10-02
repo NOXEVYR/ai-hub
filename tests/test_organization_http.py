@@ -159,6 +159,18 @@ class OrganizationHTTP(unittest.TestCase):
                 status, _ = self.request('GET', path, headers={'Host': f'attacker.example:{self.port}'})
                 self.assertEqual(status, 403)
 
+    def test_rejected_post_drains_bounded_body_without_dispatch_or_mutation(self):
+        # Send actual bytes through Windows TCP. No JSON parsing or dispatch is
+        # permitted, even when the sender finishes a sizeable rejected body.
+        with mock.patch.object(server.api, 'dispatch') as dispatch:
+            status, result = self.request('POST', '/api/workspace/setup',
+                raw=b'x' * (1024 * 1024), headers={'Host': 'attacker.example'})
+        self.assertEqual(status, 403)
+        self.assertEqual(result['error'], 'host not allowed')
+        dispatch.assert_not_called()
+        self.assertEqual(self.cfg['ai_root'], '')
+        self.assertFalse(Path(config.CONFIG_PATH).exists())
+
     def test_post_origin_must_match_local_server(self):
         origins = ('https://attacker.example', 'null', 'http://127.0.0.1:1')
         for origin in origins:

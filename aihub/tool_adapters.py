@@ -105,6 +105,8 @@ def project_rules(tool_id, project_root, cfg=None):
         '- 新增文件只能放到本项目上述目录；不要在桌面、下载目录、应用源码、模型库或工具默认工作区存放项目产物。\n'
         '- 使用项目外资产只读引用；修改外部路径、删除原件、联网下载或修改全局配置前遵循用户明确授权。\n'
         '- 任务结束在 README.md 的交付记录中列出相对路径和实际验证，不把未验证结果写成通过。\n'
+        '- 接入曜核 MCP 后，先读取 submission_schema 与 memory_search；新任务默认必交报告，task_finish 前主动调用 report_submit 提交分类报告与显式 memory_candidates（没有长期价值用 []）。确认 status=submitted 才完成；pending/failed 时保留任务执行态，通过 report_outbox_list 与 report_outbox_retry 复检/重试。重启后须提供当前有效领取租约，勿保存租约或凭据。稳定约定、关键决策和可复用结论可提交候选；候选须由用户批准，不自动写成已批准记忆。每种工作端都须主动调用协议，接入不会拦截原生每次生成。\n'
+        '- 本任务创建的临时页面、服务和目录用 resource_register 记录精确身份与归属；完成或交接前仅收尾自己的独占临时资源，并用 resource_cleanup_report 上报带时间的检查结果。能力不可用或归属不明时标记待人工处理，不得批量关闭其他窗口。\n'
         '- 本文件是规则约束；AI Hub 未启用系统硬隔离或全盘写入监控，规则本身不能阻止越界写入。\n'
     )
     handoff = f'# {name} 项目接入\n\n项目目录：`{root}`\n\n'

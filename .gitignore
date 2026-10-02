@@ -14,3 +14,4 @@ tests/_tmp/
 *.lnk
 *.navigation-update
 *.release-update
+outputs/

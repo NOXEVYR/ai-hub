@@ -12,26 +12,23 @@
     <a class="logo" href="#/overview" aria-label="返回工作总览"><span class="logo-mark app-icon"><img src="brand-lumacore.svg" alt="" width="42" height="42"><span class="brand-trail" aria-hidden="true"></span><span class="brand-glint" aria-hidden="true"></span></span><div class="brand-wordmark"><b>曜核</b><small>AI 资产与协作工作台</small></div></a>
     <nav id="nav">
       <a href="#/overview" data-page="overview" class="nav-overview"><span data-icon="overview"></span><span>工作总览</span></a>
-      <div class="nav-label">资产 <span>ASSETS</span></div>
-      <a href="#/models" data-page="models"><span data-icon="layers"></span><span>模型资产</span></a>
-      <a href="#/images" data-page="images"><span data-icon="image"></span><span>出图图库</span></a>
+      <div class="nav-label">资源管理</div>
+      <a href="#/models" data-page="models" title="权重、LoRA、语言与语音模型，使用分析与版本"><span data-icon="layers"></span><span>模型管理</span></a>
+      <a href="#/assets" data-page="assets" title="图片、视频、音频与图片生成记录"><span data-icon="image"></span><span>素材管理</span></a>
       <a href="#/workflows" data-page="workflows"><span data-icon="workflow"></span><span>工作流</span></a>
-      <a href="#/llm" data-page="llm"><span data-icon="cpu"></span><span>模型管理</span></a>
-      <a href="#/files" data-page="files"><span data-icon="folder"></span><span>文件空间</span></a>
-      <div class="nav-label">协作 <span>COLLABORATION</span></div>
-      <a href="#/capabilities" data-page="capabilities"><span data-icon="workflow"></span><span>能力中心</span></a>
-      <a href="#/collaboration" data-page="collaboration"><span data-icon="workflow"></span><span>协作与记忆</span></a>
+      <div class="nav-label">项目与协作</div>
       <a href="#/projects" data-page="projects"><span data-icon="folder"></span><span>跨工具项目</span></a>
       <a href="#/reports" data-page="reports"><span data-icon="document"></span><span>项目与报告</span></a>
-      <div class="nav-label">管理 <span>MANAGEMENT</span></div>
-      <a href="#/workspace" data-page="workspace"><span data-icon="folder"></span><span>工作环境</span></a>
+      <a href="#/capabilities" data-page="capabilities"><span data-icon="workflow"></span><span>能力中心</span></a>
+      <a href="#/collaboration" data-page="collaboration"><span data-icon="workflow"></span><span>协作与记忆</span></a>
+      <div class="nav-label">工作区与维护</div>
+      <a href="#/workspace" data-page="workspace"><span data-icon="folder"></span><span>工作区设置</span></a>
+      <a href="#/files" data-page="files"><span data-icon="folder"></span><span>文件空间</span></a>
       <a href="#/organizer" data-page="organizer"><span data-icon="shield"></span><span>安全区整理</span></a>
-      <a href="#/analysis" data-page="analysis"><span data-icon="chart"></span><span>使用分析</span></a>
-      <a href="#/updates" data-page="updates"><span data-icon="refresh"></span><span>模型更新</span></a>
-      <a href="#/settings" data-page="settings"><span data-icon="settings"></span><span>终端设置</span></a>
+      <a href="#/settings" data-page="settings"><span data-icon="settings"></span><span>软件设置</span></a>
     </nav>
     <div id="sidebar-status" class="sidebar-status" aria-live="polite">正在连接本地服务…</div>
-    <div class="sidebar-note"><span class="local-indicator" aria-hidden="true"></span> 本地工作台 <span>v2.13.2</span></div>
+    <div class="sidebar-note"><span class="local-indicator" aria-hidden="true"></span> 本地工作台 <span>v2.13.10</span></div>
   </aside>
   <main id="main">
     <header id="topbar">
@@ -42,15 +39,15 @@
       <label class="global-searchbox"><span data-icon="search" aria-hidden="true"></span><input id="global-search" type="search" aria-label="全局搜索模型" placeholder="搜索模型、架构…"><kbd aria-hidden="true">Ctrl K</kbd></label>
       <button id="btn-app-update" class="btn ghost" title="曜核软件版本与自动更新">软件更新</button>
       <button id="btn-check-updates" class="btn ghost" title="检查模型来源的版本信息"><span data-icon="refresh"></span>检查模型版本</button>
-      <button id="btn-rescan" class="btn primary" aria-label="刷新索引" title="刷新本地文件与出图索引"><span data-icon="scan"></span>刷新索引</button>
+      <button id="btn-rescan" class="btn primary" aria-label="刷新索引" title="刷新模型、素材、工作流等本地资源索引"><span data-icon="scan"></span>刷新索引</button>
     </header>
     <div id="page"></div>
   </main>
 </div>
 <div id="drawer-mask" class="hidden"></div><aside id="drawer" class="hidden" role="dialog" aria-modal="true" aria-label="模型详情"></aside>
-<div id="lightbox" class="hidden" role="dialog" aria-modal="true" aria-label="图片查看"></div>
+<div id="lightbox" class="hidden" role="dialog" aria-modal="true" aria-label="素材预览"></div>
 <div id="modal-mask" class="hidden"><div id="modal" role="dialog" aria-modal="true" aria-label="详细信息"></div></div>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="navigation.js"></script><script src="organizer.js"></script><script src="registry.js"></script><script src="harnesses.js"></script><script src="workspace.js"></script><script src="collaboration.js"></script><script src="context-menu.js"></script><script src="workcenter.js"></script><script src="capabilities.js"></script><script src="capability-library.js"></script><script src="app-update.js"></script><script src="app.js"></script>
+<script src="navigation.js"></script><script src="organizer.js"></script><script src="registry.js"></script><script src="harnesses.js"></script><script src="workspace.js"></script><script src="collaboration.js"></script><script src="context-menu.js"></script><script src="workcenter.js"></script><script src="capabilities.js"></script><script src="capability-library.js"></script><script src="app-update.js"></script><script src="overlays.js"></script><script src="media.js"></script><script src="app.js"></script>
 </body>
 </html>

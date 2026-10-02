@@ -16,7 +16,8 @@ def run_image_scan(db, cfg, progress_cb=None):
 def _run_image_scan(db, cfg, progress_cb=None):
     """扫描所有输出目录。增量：path+mtime+size 未变则跳过。"""
     out_roots = cfg.get("output_roots") or []
-    stats = {"scanned": 0, "with_meta": 0, "skipped": 0, "refs": 0, "ghost": 0}
+    stats = {"scanned": 0, "with_meta": 0, "skipped": 0, "refs": 0, "ghost": 0,
+             "removed": 0, "failed_roots": [], "completed_roots": []}
     ghost_refs = {}
 
     def report(msg):
@@ -54,49 +55,123 @@ def _run_image_scan(db, cfg, progress_cb=None):
 
     img_total = 0
     visited = set()
-    for root in out_roots:
+    completed_seen = set()
+    protected_scopes = []
+    for configured_root in out_roots:
+        root = configured_root
         if not cfgmod.scan_root_allowed(root, cfg):
+            stats["failed_roots"].append(
+                f"{configured_root}：来源当前不可用或已被排除；请恢复来源，或在来源设置中明确移除。")
+            protected_scopes.append(root)
             continue
         if (os.path.basename(os.path.normpath(root)).casefold() in cfgmod.OUTPUT_EXCLUDED_NAMES
                 or (cfg.get('ai_root') and cfgmod._within(root, cfg['ai_root'])
                     and cfgmod.output_path_excluded(root, cfg['ai_root']))):
             continue
         root = os.path.realpath(root)
-        if not os.path.isdir(root):
-            continue
-        for dp, _dns, fns in os.walk(root):
-            _dns[:] = [name for name in _dns if not cfgmod.scan_excluded(os.path.join(dp, name), cfg)
-                       and not cfgmod.output_path_excluded(os.path.join(dp, name), root)]
-            for fn in fns:
-                ext = os.path.splitext(fn)[1].lower()
-                if ext not in meta.IMAGE_EXTS:
-                    continue
-                path = os.path.join(dp, fn)
-                if cfgmod.scan_excluded(path, cfg) or cfgmod.output_path_excluded(path, root):
-                    continue
-                if os.path.normcase(path) in visited:
-                    continue
-                visited.add(os.path.normcase(path))
-                img_total += 1
-                if img_total % 300 == 0:
-                    report(f"出图分析：{img_total} 张…（已解析 {stats['scanned']}，"
-                           f"引用 {stats['refs']}，未知 {stats['ghost']}）")
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                if path in prev and abs(prev[path][0] - st.st_mtime) < 1 and prev[path][1] == st.st_size:
-                    stats["skipped"] += 1
-                    continue
-                row, refs_out = analyze_image(path, fn, dp, st, name_index, files_by_name,
-                                              ghost_refs, stats)
-                if row:
-                    img_rows.append(row)
-                    stats["scanned"] += 1
-                ref_rows.extend(refs_out)
-                if len(img_rows) >= 800:
-                    flush()
+        root_errors = []
+        root_error_scopes = []
+        root_seen = set()
+
+        def record_error(exc, fallback_scope):
+            root_errors.append(exc)
+            error_path = getattr(exc, "filename", None)
+            root_error_scopes.append(error_path if isinstance(error_path, str) and error_path else fallback_scope)
+
+        def on_walk_error(exc):
+            record_error(exc, root)
+
+        try:
+            for dp, _dns, fns in os.walk(root, onerror=on_walk_error):
+                kept_dirs = []
+                for name in _dns:
+                    subdir = os.path.join(dp, name)
+                    if cfgmod.scan_excluded(subdir, cfg) or cfgmod.output_path_excluded(subdir, root):
+                        protected_scopes.append(subdir)
+                    else:
+                        kept_dirs.append(name)
+                _dns[:] = kept_dirs
+                for fn in fns:
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext not in meta.IMAGE_EXTS:
+                        continue
+                    path = os.path.join(dp, fn)
+                    if cfgmod.scan_excluded(path, cfg) or cfgmod.output_path_excluded(path, root):
+                        protected_scopes.append(path)
+                        continue
+                    path_key = _path_key(path)
+                    root_seen.add(path_key)
+                    if path_key in visited:
+                        continue
+                    img_total += 1
+                    if img_total % 300 == 0:
+                        report(f"出图分析：{img_total} 张…（已解析 {stats['scanned']}，"
+                               f"引用 {stats['refs']}，未知 {stats['ghost']}）")
+                    try:
+                        st = os.stat(path)
+                    except OSError as exc:
+                        record_error(exc, path)
+                        continue
+                    visited.add(path_key)
+                    if path in prev and abs(prev[path][0] - st.st_mtime) < 1 and prev[path][1] == st.st_size:
+                        stats["skipped"] += 1
+                        continue
+                    try:
+                        row, refs_out = analyze_image(path, fn, dp, st, name_index, files_by_name,
+                                                      ghost_refs, stats)
+                    except Exception as exc:
+                        record_error(exc, path)
+                        continue
+                    if row:
+                        img_rows.append(row)
+                        stats["scanned"] += 1
+                    ref_rows.extend(refs_out)
+                    if len(img_rows) >= 800:
+                        flush()
+        except OSError as exc:
+            record_error(exc, root)
+
+        if root_errors:
+            detail = "; ".join(str(error) for error in root_errors[:3])
+            stats["failed_roots"].append(f"{configured_root}：遍历不完整；{detail}")
+            protected_scopes.append(root)
+            protected_scopes.extend(root_error_scopes)
+            report(f"图库来源读取不完整，保留该来源的历史记录：{configured_root}")
+        else:
+            stats["completed_roots"].append(root)
+            completed_seen.update(root_seen)
     flush()
+
+    # Only a fully traversed source proves that absent paths were deleted.
+    # Offline or partially unreadable sources keep both image rows and refs.
+    stale = []
+    if stats["completed_roots"]:
+        for row in db.query("SELECT path FROM images"):
+            path = row["path"]
+            if not any(_path_is_within(path, root) for root in stats["completed_roots"]):
+                continue
+            if _path_key(path) in completed_seen:
+                continue
+            if any(_path_is_within(path, scope) for scope in protected_scopes):
+                continue
+            if cfgmod.scan_path_excluded(path, cfg) or any(
+                    cfgmod.output_path_excluded(path, root)
+                    for root in stats["completed_roots"] if _path_is_within(path, root)):
+                continue
+            try:
+                os.stat(path)
+            except (FileNotFoundError, NotADirectoryError):
+                stale.append((path,))
+            except OSError:
+                # Access failures and transient filesystem errors are not proof
+                # that a historical image was deleted.
+                continue
+        if stale:
+            with db.lock:
+                db.conn.executemany("DELETE FROM img_refs WHERE image_path=?", stale)
+                db.conn.executemany("DELETE FROM images WHERE path=?", stale)
+                db.conn.commit()
+            stats["removed"] = len(stale)
 
     # 未知引用但文件存在于盘上 → 自动补录为模型行（覆盖"新下载模型"场景）
     auto_added = 0
@@ -121,12 +196,25 @@ def _run_image_scan(db, cfg, progress_cb=None):
 
     recompute_usage(db)
     db.set_meta("image_parser_version", "2")
-    db.set_meta("image_scan_at", time.strftime("%Y-%m-%d %H:%M:%S"))
+    if not stats["failed_roots"]:
+        db.set_meta("image_scan_at", time.strftime("%Y-%m-%d %H:%M:%S"))
     refresh_ghost_refs(db)
     report(f"出图分析完成：解析 {stats['scanned']} 张（带元数据 {stats['with_meta']}，"
-           f"增量跳过 {stats['skipped']}），模型引用 {stats['refs']}，未知引用 {stats['ghost']}，"
-           f"自动补录模型 {auto_added}")
+           f"增量跳过 {stats['skipped']}，清理已删除 {stats['removed']}），"
+           f"模型引用 {stats['refs']}，未知引用 {stats['ghost']}，自动补录模型 {auto_added}"
+           + (f"；失败来源 {len(stats['failed_roots'])}" if stats["failed_roots"] else ""))
     return stats
+
+
+def _path_key(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _path_is_within(path, root):
+    try:
+        return os.path.commonpath((_path_key(path), _path_key(root))) == _path_key(root)
+    except (OSError, ValueError):
+        return False
 
 
 def refresh_ghost_refs(db):
