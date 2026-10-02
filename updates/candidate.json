@@ -1,13 +1,13 @@
 {
-  "schema": "ai-hub-update-v1",
   "app": "ai-hub",
   "channel": "candidate",
-  "version": "2.13.10",
-  "commit": "5c64be68dadb47090d0554784ef6187b47133822",
+  "version": "2.13.11",
+  "commit": "ced1489f70429f102b105efa6ef4b20438190039",
   "package": {
-    "bytes": 1853956,
-    "sha256": "2a2000e19ec64c00469a219e9c3037fb979fb99e05bae31c56d793e7c784736e"
+    "bytes": 1865892,
+    "sha256": "0885269de4a5b64371133016bfce9ef861d6069c26ee4c0bc3670a0b649efeca"
   },
-  "notes": "2.13.10 整合工作区、素材管理、能力发现、分类报告与记忆候选；增加可选协作执行协议及所有者授权核对。修复扫描失败历史保留、原生组件加载与更新交接。能力发现不代表接口已鉴权或实际执行；记忆须人工批准后共享。",
-  "min_updater_version": "2.13.5"
+  "notes": "2.13.11 修复能力派单持久去重与原号恢复、资源租约恢复、返回草稿与冷启动连接；完整新工作区/报告/记忆/素材链路、最终ZIP升级和失败回滚已验证。接入端须主动提交报告，记忆审批后共享。",
+  "min_updater_version": "2.13.5",
+  "schema": "ai-hub-update-v1"
 }
