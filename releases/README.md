@@ -1,15 +1,19 @@
-# 曜核 2.13.2 下载
+# 曜核 2.13.11 下载
 
-曜核就是 AI Hub 改名后的新版，请使用最新版本。旧包仅作历史存档，不作为稳定版推荐。
+曜核就是 AI Hub 改名后的新版。当前公共包已下载核对，旧包保留作历史存档。
 
-- [Windows x64 包](AI-Hub-v2.13.2-Windows-x64.zip) — 1,415,161 字节
-- [源码包](AI-Hub-v2.13.2-Source.zip) — 1,020,240 字节
-- [SHA-256](AI-Hub-v2.13.2-SHA256.txt) · [包清单](AI-Hub-v2.13.2-release.json)
-- [更新说明](../docs/RELEASE_2.13.2.md) · [软件更新说明](../docs/SOFTWARE_UPDATES.md)
+- [Windows x64 桌面包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/AI-Hub-v2.13.11-Windows-x64.zip) — 1,865,892 bytes
+- [源码包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/AI-Hub-v2.13.11-Source.zip) — 1,446,336 bytes
+- [SHA-256](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/SHA256SUMS.txt) · [版本页面](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.11)
+- [更新说明](../docs/RELEASE_2.13.11.md) · [发布验收](../docs/PUBLICATION_2.13.11.md)
 
-2.12 及以上可使用软件更新器；2.6 等旧版首次升级需下载程序包。candidate 是更新通道标识。包不含用户数据、模型、凭据、Python 或 WebView2 运行环境。
+完整解压后运行兼容文件名 AI Hub.exe。最低更新器版本为2.13.5，candidate为更新通道标识；更早版本请先备份数据再下载完整包。公共包不含个人数据、模型、凭据、Python或WebView2运行环境。
 
 ## 历史下载保留
+
+- 2.13.10：[Windows](AI-Hub-v2.13.10-Windows-x64.zip) · [源码](AI-Hub-v2.13.10-Source.zip) · [版本页面](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.10)
+- 2.13.2：[Windows](AI-Hub-v2.13.2-Windows-x64.zip) · [源码](AI-Hub-v2.13.2-Source.zip)
+
 
 - 2.13.0：[Windows](AI-Hub-v2.13.0-Windows-x64.zip) · [源码](AI-Hub-v2.13.0-Source.zip)
 

@@ -4,9 +4,9 @@
 
 ## 获取与启动
 
-**2.13.11 固定包**：[版本页面](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.11) · [本版说明](docs/RELEASE_2.13.11.md)。本版增加派单持久去重、丢回复回查、资源认领恢复及冷启动连接修复，并验证新工作区、分类报告、记忆审批与媒体预览。正式发布和公共下载校验另见发布记录。
+**2.13.11 已发布并核对下载**：[Windows x64 桌面包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/AI-Hub-v2.13.11-Windows-x64.zip) · [源码包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/AI-Hub-v2.13.11-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.11/SHA256SUMS.txt) · [Release](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.11)。
 
-2.13.5 及以上更新器读取候选通道的绑定清单；更早版本请备份数据后下载完整包。旧 [2.13.10](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.10) 保留作历史版本。[软件更新说明](docs/SOFTWARE_UPDATES.md)。
+本版修复派单持久去重、丢回复回查、资源认领恢复、返回草稿丢失和冷启动连接拒绝；最终 ZIP 的新工作区、分类报告、记忆审批、媒体预览与隔离升级/回滚已验证。2.13.10 原更新器已实际从官方源检查、下载并校验本版；最低更新器版本为 2.13.5，更早版本请备份数据并下载完整包。[发布验收记录](docs/PUBLICATION_2.13.11.md) · [本版说明](docs/RELEASE_2.13.11.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。旧 [2.13.10](https://github.com/NOXEVYR/ai-hub/releases/tag/v2.13.10) 保留作历史版本。
 
 运行条件：**Windows x64、.NET Framework 4.8+、Python 3.9+、Microsoft Edge WebView2 Runtime**。桌面包不捆绑 Python、WebView2 或模型权重。缺少环境时先安装 [Python](https://www.python.org/downloads/windows/) 和 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)。也支持将可用 Python 解释器放到 `runtime/python.exe`。
 
