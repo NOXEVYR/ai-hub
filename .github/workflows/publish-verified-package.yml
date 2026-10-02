@@ -36,7 +36,7 @@ jobs:
           import urllib.parse
           import urllib.request
           import zipfile
-          
+
           spec = json.loads(os.environ['RELEASE_SPEC'])
           repo, commit, tag = spec['repository'], spec['commit'], spec['tag']
           assert repo in ('NOXEVYR/ai-hub', 'NOXEVYR/frameweave')
@@ -44,7 +44,7 @@ jobs:
           assert re.fullmatch(r'v\d+\.\d+\.\d+', tag)
           token = os.environ.get('GH_TOKEN')
           headers = {'User-Agent': 'verified-public-package-publisher', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
-          
+
           def api(path, method='GET', body=None):
               assert token, 'GH_TOKEN required for publishing'
               url = 'https://api.github.com/repos/' + repo + '/' + path
@@ -57,7 +57,7 @@ jobs:
                   if error.code == 404 and method == 'GET':
                       return None
                   raise RuntimeError(f'GitHub {method} {path}: HTTP {error.code}') from None
-          
+
           def download(name, limit):
               assert PurePosixPath(name).name == name and 0 < limit <= 50 * 1024 * 1024
               url = f'https://raw.githubusercontent.com/{repo}/{commit}/releases/{urllib.parse.quote(name)}'
@@ -66,7 +66,7 @@ jobs:
               if len(raw) > limit:
                   raise ValueError(f'{name}: exceeds declared size')
               return raw
-          
+
           with tempfile.TemporaryDirectory(prefix='verified-release-') as temporary:
               root = Path(temporary)
               manifest_bytes = download(spec['manifest'], 100_000)
@@ -106,6 +106,9 @@ jobs:
                   assert existing_tag['object']['type'] == 'commit' and existing_tag['object']['sha'] == commit, 'Existing tag points elsewhere; refusing to alter it'
               release = api('releases/tags/' + tag)
               if release is None:
+                  if existing_tag is None:
+                      package_ref = api('git/ref/heads/release/package-' + tag[1:])
+                      assert package_ref and package_ref['object']['type'] == 'commit' and package_ref['object']['sha'] == commit, 'Create and verify release/package-VERSION at the immutable package commit before publishing; no release was created'
                   release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': commit, 'name': spec['title'],
                       'body': spec['notes'], 'draft': True, 'prerelease': False, 'make_latest': 'false'})
               expected_names = {record['name'] for record in records}
