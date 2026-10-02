@@ -22,7 +22,12 @@ def health(port):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
             data = json.load(response)
-        return data if data.get("app") == "ai-hub" else None
+        matches = (isinstance(data, dict) and data.get("app") == "ai-hub"
+                   and data.get("control_protocol") == "ai-hub-local-control-v1"
+                   and isinstance(data.get("service_instance_id"), str) and bool(data["service_instance_id"].strip())
+                   and isinstance(data.get("install_root"), str) and bool(data["install_root"].strip())
+                   and os.path.normcase(os.path.realpath(data["install_root"])) == os.path.normcase(str(ROOT.resolve())))
+        return data if matches else None
     except (OSError, ValueError):
         return None
 
@@ -75,7 +80,6 @@ def ensure_running(port, timeout=20, startup_state=None):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if health(port):
-                (DATA / "server.pid.json").write_text(json.dumps({"pid": process.pid, "port": port, "root": str(ROOT)}, indent=2), encoding="utf-8")
                 return {"status": "started", "port": port, "pid": process.pid}
             if process.poll() is not None:
                 raise RuntimeError("曜核未能启动。详细原因已写入 data/server.log。")

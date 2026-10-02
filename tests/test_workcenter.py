@@ -44,6 +44,23 @@ class WorkcenterTests(unittest.TestCase):
         maintenance.scan_source(self.cfg, {'source_id': source['id']})
         return source
 
+    def test_replaced_source_and_reconfirmed_history_cannot_grant_body_read(self):
+        source_path = self.base / 'reports'
+        report = self.file('report.md', 'old body', base=source_path)
+        source = self.scan(source_path)
+        doc = workcenter.lookup_document(self.cfg, str(report))
+        source_path.rename(self.base / 'retained-reports')
+        source_path.mkdir()
+        report.write_text('new unauthorized body', encoding='utf-8')
+        with self.assertRaises((ValueError, PermissionError)):
+            workcenter.read_document(self.cfg, doc['id'])
+        preview = maintenance.source_reconfirm_preview(self.cfg, {'source_id': source['id']})
+        maintenance.source_reconfirm_apply(self.cfg, {'token': preview['token']})
+        with self.assertRaises((ValueError, PermissionError)):
+            workcenter.read_document(self.cfg, doc['id'])
+        maintenance.scan_source(self.cfg, {'source_id': source['id']})
+        self.assertEqual(workcenter.read_document(self.cfg, doc['id'])['content'], 'new unauthorized body')
+
     def test_all_records_pagination_filters_facets_and_metadata_only(self):
         for number in range(507):
             self.file('2026-09-25/alpha/outputs/report-%03d.md' % number)
@@ -99,7 +116,7 @@ class WorkcenterTests(unittest.TestCase):
         self.scan()
         self.assertEqual(workcenter.lookup_document(self.cfg, str(first))['category'], 'delivery')
         self.assertEqual(before, {p: p.read_bytes() for p in before})
-        self.assertEqual(workcenter.list_projects(self.cfg)['items'][0]['name'], '我的实际项目')
+        self.assertEqual(workcenter.list_projects(self.cfg, {'project_id': doc['project_id']})['items'][0]['name'], '我的实际项目')
 
     def test_external_sources_root_isolation_and_unknown_paths(self):
         external = self.base / 'external'
@@ -188,17 +205,18 @@ class WorkcenterTests(unittest.TestCase):
         source = self.scan()
         stale = self.file('2026-09-25/one/Datasets/caption.txt')
         with maintenance._db() as con, con:
-            con.execute('INSERT INTO inventory VALUES(?,?,?,?,?,?)', (source['id'], str(stale), stale.name, 6, 0, 'other_text'))
+            con.execute('INSERT INTO inventory(source_id,path,title,size,mtime,category) VALUES(?,?,?,?,?,?)', (source['id'], str(stale), stale.name, 6, 0, 'other_text'))
             con.execute('UPDATE sources SET truncated=1 WHERE id=?', (source['id'],))
         result = workcenter.list_documents(self.cfg)
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['coverage']['excluded_documents'], 1)
         self.assertEqual(result['coverage']['partial_sources'], 1)
-        projects = workcenter.list_projects(self.cfg)['items']
+        self.assertEqual(workcenter.list_projects(self.cfg)['total'], 0)
+        projects = workcenter.list_projects(self.cfg, {'entry_kind': 'candidate'})['items']
         self.assertEqual(len(projects), 2)
         self.assertTrue(all(p['origin'] == 'inferred' for p in projects))
         self.assertEqual(next(p for p in projects if p['name'] == 'two')['status'], 'unscanned')
-        self.assertEqual(workcenter.list_projects(self.cfg, {'tool': 'codex', 'query': 'two'})['total'], 1)
+        self.assertEqual(workcenter.list_projects(self.cfg, {'entry_kind': 'candidate', 'tool': 'codex', 'query': 'two'})['total'], 1)
 
     def test_actual_legacy_reports_and_metadata_project_discovery(self):
         with mock.patch.object(workcenter.management, 'reports', _REAL_REPORTS), mock.patch.object(workcenter.management, 'projects', _REAL_PROJECTS):
@@ -206,7 +224,7 @@ class WorkcenterTests(unittest.TestCase):
             self.file('40_Projects/真实项目/README.md')
             result = workcenter.list_documents(self.cfg)
             self.assertTrue(any(d['path'] == str(path) and d['intake_status'] == 'legacy' for d in result['items']))
-            self.assertTrue(any(p['name'] == '真实项目' for p in workcenter.list_projects(self.cfg)['items']))
+            self.assertTrue(any(p['name'] == '真实项目' for p in workcenter.list_projects(self.cfg, {'entry_kind': 'candidate'})['items']))
 
     def test_project_lookup_longest_ancestor_and_equal_path_registration_priority(self):
         parent = self.root / 'parent'

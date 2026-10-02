@@ -15,21 +15,24 @@ function context(extra={}){
   return ctx;
 }
 
-test('reorganized navigation preserves all routes, action IDs and module loading order',()=>{
+test('resource navigation has one model/material entrance and preserves action IDs and module order',()=>{
   const routes=[...index.matchAll(/data-page="([^"]+)"/g)].map(m=>m[1]);
-  const expected=['overview','models','images','workflows','llm','files','capabilities','collaboration','projects','reports','workspace','organizer','analysis','updates','settings'];
+  const expected=['overview','models','assets','workflows','projects','reports','capabilities','collaboration','workspace','files','organizer','settings'];
   assert.deepEqual(routes,expected);assert.equal(new Set(routes).size,routes.length);
   for(const id of ['app','sidebar','nav','sidebar-status','main','topbar','menu-toggle','nav-back','nav-back-label','page-title','jobbar','global-search','btn-check-updates','btn-rescan','page','drawer','drawer-mask','lightbox','modal-mask','modal','toast'])assert.equal([...index.matchAll(new RegExp(`id="${id}"`,'g'))].length,1,id);
   assert(index.indexOf('lumacore.css')>index.indexOf('collaboration.css'));
   for(const module of ['navigation.js','harnesses.js','workspace.js','collaboration.js','workcenter.js','capabilities.js','context-menu.js'])assert(index.indexOf(`src="${module}"`)<index.indexOf('src="app.js"'));
-  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.13\.2/);
+  assert(index.indexOf('src="media.js"')<index.indexOf('src="app.js"'));
+  assert.match(index,/资源管理/);assert.match(index,/项目与协作/);assert.match(index,/工作区与维护/);
+  assert(!index.includes('出图图库'));assert(!index.includes('模型资产'));
+  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.13\.10/);
   assert.match(index,/<title>曜核 · AI 资产与协作工作台<\/title>/);assert.match(index,/<b>曜核<\/b>/);
   assert(!index.includes('LUMACORE'));assert(!index.includes('LumaCore'));assert(!index.includes('曜瞳'));
 });
 
 test('overview keeps indexed scopes and model identity while prioritizing real working entrances',()=>{
   const html=context().renderOverview(overview(),management(),{});
-  for(const page of ['models','images','capabilities','reports'])assert(html.includes(`class="lc-entry" data-nav="${page}"`));
+  for(const page of ['models','assets','capabilities','reports'])assert(html.includes(`class="lc-entry" data-nav="${page}"`));
   assert.match(html,/class="model-link" data-id="42"/);assert.match(html,/sample\.safetensors/);assert.match(html,/SDXL/);
   assert(html.indexOf('资产核心指标')<html.indexOf('常用工作入口'));
   assert(html.indexOf('最近修改的模型')<html.indexOf('按创作用途探索'));

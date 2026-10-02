@@ -173,8 +173,8 @@ def replace_if_unchanged(path, expected, content):
             temporary.unlink()
 
 
-def configure(tool, app_dir, python, port=8765, apply=False, home=None, env=None, codex=None, runner=None):
-    if tool not in SUPPORTED or not 1024 <= port <= 65535:
+def configure(tool, app_dir, python, port=None, apply=False, home=None, env=None, codex=None, runner=None):
+    if tool not in SUPPORTED or (port is not None and (type(port) is not int or not 1024 <= port <= 65535)):
         raise ConfigError('Unsupported tool or port')
     env = dict(os.environ if env is None else env)
     home = Path.home() if home is None else Path(home)
@@ -185,7 +185,8 @@ def configure(tool, app_dir, python, port=8765, apply=False, home=None, env=None
     path = config_path(tool, home, env)
     raw = snapshot(path)
     original = load_config(raw, tool)
-    args = ['-B', str(bridge), '--port', str(port), '--client-id', tool + '-main', '--tool', tool]
+    endpoint = ['--install-root', str(app_dir)] if port is None else ['--port', str(port)]
+    args = ['-B', str(bridge), *endpoint, '--client-id', tool + '-main', '--tool', tool]
     entry = {'command': str(python), 'args': args}
     if tool != 'codex':
         entry = {'type': 'stdio', **entry}
@@ -269,7 +270,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app-dir', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
-    parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--port', type=int, help='Optional explicit legacy port; otherwise follow the selected installation')
     parser.add_argument('--tool', choices=(*SUPPORTED, 'all'), default='all')
     parser.add_argument('--codex', type=Path, help='Absolute native Codex executable; no shell wrapper')
     parser.add_argument('--apply', action='store_true', help='User-authorized configuration change; default is read-only')

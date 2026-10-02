@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import zipfile
 
+from aihub import app_update
+
 MODULE = Path(__file__).resolve().parents[1] / "tools/package_release.py"
 spec = importlib.util.spec_from_file_location("package_release", MODULE)
 package = importlib.util.module_from_spec(spec)
@@ -28,7 +30,8 @@ class PackageTests(unittest.TestCase):
             root = Path(temporary)
             self.fixture(root)
             for name in ("data/config.json", "data/desktop/profile.js", "backups/code.py", "desktop/vendor/secret.py",
-                         "tests/_tmp/secret.py", "README.md", "VALIDATION.md", "AI Hub.lnk", ".env"):
+                         "tests/_tmp/secret.py", "docs/coop-00/DRAFT.md", "docs/coop-00/fixtures/example.json",
+                         "README.md", "VALIDATION.md", "AI Hub.lnk", ".env"):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("PRIVATE-SENTINEL", encoding="utf-8")
@@ -63,3 +66,29 @@ class PackageTests(unittest.TestCase):
             package.check_exe(data)
         struct.pack_into("<H", data, 128 + 24 + 68, 2)
         package.check_exe(data)
+
+    def test_fresh_windows_archive_is_a_valid_installed_update_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            files = {"AI Hub.exe": b"synthetic exe", "server.py": b"synthetic server"}
+            package.write_archive(folder / "windows.zip", files, "2.13.0", "Windows-x64")
+            with zipfile.ZipFile(folder / "windows.zip") as archive:
+                archive.extractall(folder / "unpacked")
+            root = folder / "unpacked" / "AI-Hub"
+            manifest_before = (root / "manifest.json").read_bytes()
+            ledger = app_update._verify_installed_manifest(root, app_update._program_files(root), "2.13.0")
+            self.assertEqual(ledger["kind"], "Windows-x64")
+            self.assertEqual((root / "manifest.json").read_bytes(), manifest_before)
+            (root / "server.py").write_bytes(b"changed")
+            with self.assertRaises(app_update.UpdateBusyError):
+                app_update._verify_installed_manifest(root, app_update._program_files(root), "2.13.0")
+
+    def test_source_archive_cannot_become_windows_update_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            package.write_archive(folder / "source.zip", {"server.py": b"source"}, "2.13.0", "Source")
+            with zipfile.ZipFile(folder / "source.zip") as archive:
+                archive.extractall(folder)
+            root = folder / "AI-Hub"
+            with self.assertRaises(app_update.UpdateBusyError):
+                app_update._verify_installed_manifest(root, app_update._program_files(root), "2.13.0")

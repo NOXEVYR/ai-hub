@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -52,6 +53,25 @@ def wait_state(manager, expected, timeout=4):
 
 
 class UpdateFeedTests(unittest.TestCase):
+    def test_ready_worker_cannot_leave_a_second_check_stuck_without_a_worker(self):
+        entered, release = threading.Event(), threading.Event()
+        manager = self.manager(lambda *_: b"")
+        def finishing():
+            with manager._lock:
+                manager._state = "ready"
+            entered.set()
+            release.wait(3)
+        manager._start_worker("check", finishing)
+        try:
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(manager.status()["operation_active"])
+            self.assertEqual(manager.check()["state"], "ready")
+        finally:
+            release.set()
+            manager.close()
+        self.assertFalse(manager.status()["operation_active"])
+        self.assertEqual(manager.status()["state"], "ready")
+
     def test_semver_prerelease_order_and_no_prerelease_downgrade(self):
         ordered = ["2.12.0-alpha", "2.12.0-alpha.1", "2.12.0-alpha.beta",
                    "2.12.0-beta", "2.12.0-beta.2", "2.12.0-beta.11",
@@ -138,7 +158,7 @@ class UpdateFeedTests(unittest.TestCase):
         manager.check()
         ready = wait_state(manager, "available")
         with self.assertRaises(ValueError):
-            manager.download(ready["release_id"][:-1] + "0")
+            manager.download(ready["release_id"][:-1] + ("1" if ready["release_id"][-1] == "0" else "0"))
         with self.assertRaises(ValueError):
             manager.settings(1, False)
         settings = manager.settings(False, True)
@@ -150,6 +170,12 @@ class UpdateFeedTests(unittest.TestCase):
         feed = feed_value(package)
         manager = self.manager(lambda url, maximum: feed if url == updater.FEED_URL else package)
         manager.settings(False, True)
+        self.assertEqual(manager.status()["state"], "idle")
+        # Opting in does not compete with startup. Advance the injected policy
+        # clock after the desktop has reported a successfully rendered page.
+        manager.ui_ready()
+        manager._schedule_state._clock = lambda: manager._ui_ready_at + 61
+        manager._wake_scheduler.set()
         ready = wait_state(manager, "ready", timeout=6)
         self.assertEqual(ready["auto_install"], True)
         self.assertEqual(ready["downloaded_bytes"], len(package))
@@ -238,6 +264,24 @@ class UpdateArchiveTests(unittest.TestCase):
 
 
 class UpdatePrepareTests(unittest.TestCase):
+    def test_fresh_extracted_package_can_prepare_install_without_bootstrap_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="yaohe-update-unpacked-") as tmp:
+            root = Path(tmp)
+            release, old, _new = self.make_install(root)
+            archive = package_bytes(old, version="2.11.3")
+            with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+                (root / "manifest.json").write_bytes(zipped.read("AI-Hub/manifest.json"))
+            manager = updater.UpdateManager(root, "2.11.3", fetcher=lambda *_: b"")
+            self.addCleanup(manager.close)
+            manager._release, manager._ready_release_id, manager._state = release, release["release_id"], "ready"
+            def identity(pid):
+                return {"pid": pid, "start_filetime": "12345", "executable_path": str(root / "AI Hub.exe")}
+            with mock.patch.object(updater, "_process_identity", side_effect=identity):
+                prepared = manager.prepare(release["release_id"], False, {"pid": 99998, "start_filetime": "12345"})
+            ticket = json.loads(Path(prepared["ticket_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(ticket["installed_manifest"]["desktop_shell_version"], "2.12.0")
+            manager.cancel(prepared["transaction_id"])
+
     def make_install(self, root):
         helper_source = (ROOT / "tools" / "app_update_helper.py").read_bytes()
         old = {"server.py": b"old server", "AI Hub.exe": b"old exe",

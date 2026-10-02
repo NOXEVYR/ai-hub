@@ -3,6 +3,7 @@
 import json
 import collections
 import copy
+import functools
 import mimetypes
 import os
 import re
@@ -13,11 +14,12 @@ import urllib.parse
 import uuid
 
 from . import config as cfgmod
+from . import scan as asset_scan
 from . import jobs, organization, organizer
 from . import updater as upd
 from . import management
 from . import classification
-from . import images as image_store, meta, recycle
+from . import images as image_store, meta, recycle, media
 from . import workspace as workspace_manager
 from . import projects as project_manager, tool_adapters
 from .db import jload
@@ -129,38 +131,49 @@ APP_CFG = {}
 # ---------- 路由 ----------
 
 def _source_scope(cfg, kind='scan', column='path'):
-    """Limit managed views without deleting records from previous sources."""
+    return asset_scan.source_scope(cfg, kind, column)
+
+
+def _workspace_request_error(cfg, body):
+    expected = body.get('_workspace_root') if isinstance(body, dict) else None
+    if isinstance(body, dict) and '_workspace_root' in body and (not isinstance(expected, str) or
+            cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or '')):
+        return _err('工作环境已切换，请刷新页面后重新操作。', 409)
+    return None
+
+
+def _model_mutation(handler):
+    @functools.wraps(handler)
+    def locked(db, cfg, params, body):
+        # Workspace/source saves use this lock as well: scope validation and
+        # mutation are one operation, including single-model network checks.
+        with organization.LOCK:
+            return handler(db, cfg, params, body)
+    return locked
+
+
+def _scoped_model(db, cfg, mid):
+    scope, args = _source_scope(cfg)
+    return db.one('SELECT * FROM models WHERE rowid_pk=? AND ' + scope, [mid] + args)
+
+
+def _current_usage(db, cfg, rows):
     if cfg.get('workspace_managed') is not True:
-        return '1=1', []
-    terms, args, candidates = [], [], set()
-    root = cfg.get('ai_root') or ''
-    for source in cfg.get(kind + '_roots') or []:
-        if not cfgmod.scan_root_allowed(source, cfg) or not cfgmod._within(source, root):
-            continue
-        canonical = os.path.realpath(source).rstrip('\\/')
-        candidates.add(canonical)
-        # Existing model records may use a registered compatibility junction.
-        # Keep those annotations visible only while its live target is within
-        # a selected source. Scanners still refuse traversal through junctions.
-        if kind == 'scan':
-            for alias in cfg.get('aliases') or {}:
-                if not os.path.isdir(alias):
-                    continue
-                target = os.path.realpath(alias)
-                if cfgmod._within(target, canonical):
-                    candidates.add(os.path.abspath(alias).rstrip('\\/'))
-                elif cfgmod._within(canonical, target):
-                    candidates.add(os.path.join(alias, os.path.relpath(canonical, target)).rstrip('\\/'))
-    for canonical in sorted(candidates):
-        prefix = canonical + os.sep
-        terms.append(f'({column}=? COLLATE NOCASE OR substr({column},1,?)=? COLLATE NOCASE)')
-        args.extend([canonical, len(prefix), prefix])
-    return '(' + ' OR '.join(terms) + ')' if terms else '0=1', args
+        return rows
+    scope, args = _source_scope(cfg, 'output', 'i.path')
+    usage = {r['model_path']: dict(r) for r in db.query(
+        'SELECT r.model_path,COUNT(DISTINCT i.path) img_count,'
+        'COUNT(DISTINCT CAST(i.mtime/86400 AS INTEGER)) days_used,'
+        'MAX(i.mtime) last_used,MIN(i.mtime) first_used '
+        'FROM img_refs r JOIN images i ON i.path=r.image_path WHERE ' + scope +
+        ' GROUP BY r.model_path', args)}
+    return [{**row, **{field: usage.get(row['path'], {}).get(field, 0 if field in ('img_count', 'days_used') else None)
+                      for field in ('img_count', 'days_used', 'last_used', 'first_used')}} for row in rows]
 
 
 def _scoped_models(db, cfg):
     scope, args = _source_scope(cfg)
-    return db.query('SELECT * FROM models WHERE ' + scope, args)
+    return _current_usage(db, cfg, db.query('SELECT * FROM models WHERE ' + scope, args))
 
 
 def overview(db, cfg, params, body):
@@ -180,27 +193,47 @@ def overview(db, cfg, params, body):
             "dirs": row["dir_count"] if row else 0,
             "size_h": human_size(row["size"] if row else 0),
         })
-    total_size = sum(p["size"] for p in parts)
-    total_files = sum(p["files"] for p in parts)
+    # Source cards can overlap; aggregate file paths once for the active scope.
+    file_scope, file_args = _source_scope(cfg)
+    if cfg.get('workspace_managed') is not True:
+        cover = asset_scan.minimal_roots([os.path.realpath(r) for r in roots])
+        totals = [p for p in parts if os.path.realpath(p['path']) in cover]
+        total_size = sum(p['size'] for p in totals)
+        total_files = sum(p['files'] for p in totals)
+        unique_size = int(db.get_meta('unique_size') or 0)
+    else:
+        totals = db.one('SELECT COUNT(*) files,COALESCE(SUM(size),0) bytes FROM files WHERE ' + file_scope, file_args)
+        total_size, total_files = totals['bytes'], totals['files']
+        linked = db.one("SELECT COALESCE(SUM(size),0)-COALESCE(SUM(unique_bytes),0) redundant FROM "
+                        "(SELECT SUM(size) size,MAX(size) unique_bytes FROM files WHERE category='model' AND inode<>'' AND " +
+                        file_scope + ' GROUP BY inode)', file_args)
+        unique_size = total_size - linked['redundant']
 
     model_scope, model_args = _source_scope(cfg)
     image_scope, image_args = _source_scope(cfg, 'output')
     state_counts = {r["update_state"]: r["c"] for r in
                     db.query("SELECT update_state, COUNT(*) c FROM models WHERE " + model_scope + " GROUP BY update_state", model_args)}
     img_stats = db.one("SELECT COUNT(*) n, SUM(has_meta) m FROM images WHERE " + image_scope, image_args)
-    ref_stats = db.one("SELECT COUNT(DISTINCT model_path) models, COUNT(*) refs "
-                       "FROM img_refs WHERE model_path IS NOT NULL")
-    ghost = jload(db.get_meta("ghost_refs"), [])
+    ref_model_scope, ref_model_args = _source_scope(cfg, column='m.path')
+    ref_image_scope, ref_image_args = _source_scope(cfg, 'output', 'i.path')
+    ref_stats = db.one('SELECT COUNT(DISTINCT r.model_path) models,COUNT(*) refs FROM img_refs r '
+                       'JOIN images i ON i.path=r.image_path JOIN models m ON m.path=r.model_path WHERE ' +
+                       ref_model_scope + ' AND ' + ref_image_scope, ref_model_args + ref_image_args)
+    ghost = [dict(row) for row in db.query('SELECT r.filename,r.role,COUNT(*) count FROM img_refs r JOIN images i ON i.path=r.image_path '
+                     'WHERE r.model_path IS NULL AND ' + ref_image_scope + ' GROUP BY r.filename,r.role '
+                     'ORDER BY count DESC,r.filename', ref_image_args)]
     disk_root = cfg.get("ai_root") or cfgmod.APP_DIR
     disk = shutil.disk_usage(disk_root if os.path.isdir(disk_root) else cfgmod.APP_DIR)
-    top_used = [ _row_json(r) for r in db.query(
-        "SELECT * FROM models WHERE img_count > 0 AND " + model_scope + " ORDER BY img_count DESC LIMIT 8", model_args)]
-    recent = [_row_json(r) for r in db.query(
-        "SELECT * FROM models WHERE missing=0 AND " + model_scope + " ORDER BY mtime DESC LIMIT 8", model_args)]
     pending = db.one("SELECT COUNT(*) c FROM models WHERE update_state IN ('available','maybe') AND " + model_scope, model_args)["c"]
     all_models = _scoped_models(db, cfg)
-    categories = classification.decorate(all_models, management.catalog(cfg), db.query("SELECT * FROM model_labels"))
-    distinct = classification.deduplicate_models(all_models)
+    facts = classification.FileFacts()
+    categories = classification.decorate(all_models, management.catalog(cfg), db.query("SELECT * FROM model_labels"), facts)
+    distinct = classification.deduplicate_models(all_models, facts)
+    supported = [r for r in distinct if not categories[r['rowid_pk']]['model_evidence_pending']]
+    top_used = [_row_json(r) for r in sorted((r for r in supported if r.get('img_count')),
+                key=lambda r: r.get('img_count') or 0, reverse=True)[:8]]
+    recent = [_row_json(r) for r in sorted((r for r in supported if not r.get('missing') and facts.isfile(r['path'])),
+                key=lambda r: r.get('mtime') or 0, reverse=True)[:8]]
     mtype_counts = collections.Counter(categories[r['rowid_pk']]['model_role'] for r in distinct)
     family_counts = collections.Counter(categories[r['rowid_pk']]['architecture'] or '未知' for r in distinct).most_common(12)
     central_counts = collections.Counter(categories[r['rowid_pk']]['model_role'] for r in distinct if categories[r['rowid_pk']]['scope']=='central')
@@ -213,12 +246,13 @@ def overview(db, cfg, params, body):
         "workspace": cfgmod.workspace_status(cfg),
         "disk": {"total": disk.total, "free": disk.free, "used_pct": round(100 * disk.used / disk.total, 1)},
         "parts": parts, "total_size": total_size, "total_size_h": human_size(total_size),
-        "unique_size": int(db.get_meta("unique_size") or 0),
-        "unique_size_h": human_size(int(db.get_meta("unique_size") or 0)),
+        "unique_size": unique_size,
+        "unique_size_h": human_size(unique_size),
         "total_files": total_files,
         "model_count": sum(mtype_counts.values()),
         "functional_categories": classification.facets(distinct, categories),
         "central_counts": central_counts,
+        "model_evidence_pending": sum(categories[r["rowid_pk"]]["model_evidence_pending"] for r in distinct),
         "indexed_records": len(all_models), "unique_model_files": len(distinct),
         "registered_models": sum(categories[r['rowid_pk']]['registered'] for r in distinct),
         "classification_pending": sum(categories[r['rowid_pk']]['classification_pending'] for r in distinct),
@@ -253,10 +287,11 @@ def models_list(db, cfg, params, body):
         conds.append("update_state='unchecked'")
     elif st:
         conds.append("update_state=?"); args.append(st)
-    if _q(params, "usage") == "unused":
-        conds.append("(img_count IS NULL OR img_count=0)")
-    elif _q(params, "usage") == "used":
-        conds.append("img_count>0")
+    if cfg.get('workspace_managed') is not True:
+        if _q(params, 'usage') == 'unused':
+            conds.append('(img_count IS NULL OR img_count=0)')
+        elif _q(params, 'usage') == 'used':
+            conds.append('img_count>0')
     q = _q(params, "q")
     if q:
         conds.append("(filename LIKE ? OR IFNULL(trigger_words,'') LIKE ? OR IFNULL(source_url,'') LIKE ? OR COALESCE(training_base,header_meta,'') LIKE ? OR IFNULL(family,'') LIKE ?)")
@@ -270,8 +305,15 @@ def models_list(db, cfg, params, body):
     page = max(1, _int(_q(params, "page"), 1))
     size = min(200, max(10, _int(_q(params, "size"), 50)))
     all_rows = _scoped_models(db, cfg)
-    categories = classification.decorate(all_rows, management.catalog(cfg), db.query("SELECT * FROM model_labels"))
-    rows = db.query(f"SELECT * FROM models {where} ORDER BY {order}, rowid_pk", args)
+    facts = classification.FileFacts()
+    categories = classification.decorate(all_rows, management.catalog(cfg), db.query("SELECT * FROM model_labels"), facts)
+    rows = _current_usage(db, cfg, db.query(f"SELECT * FROM models {where} ORDER BY {order}, rowid_pk", args))
+    if cfg.get('workspace_managed') is True:
+        if _q(params, 'usage') in ('used', 'unused'):
+            used = _q(params, 'usage') == 'used'
+            rows = [row for row in rows if bool(row['img_count']) == used]
+        if _q(params, 'sort') in ('usage', 'score'):
+            rows.sort(key=lambda row: row['img_count'], reverse=True)
     kind = _q(params, "kind")
     base_roles = {"Checkpoint", "Diffusion", "LLM", "TTS", "Package"}
     if kind in ("core", "base", "components"):
@@ -295,18 +337,18 @@ def models_list(db, cfg, params, body):
         rows = [r for r in rows if categories[r["rowid_pk"]].get("classification_pending")]
     if domain:
         rows = [r for r in rows if categories[r["rowid_pk"]]["domain"] == domain]
-    rows = classification.deduplicate_models(rows)
+    rows = classification.deduplicate_models(rows, facts)
     purpose_counts = collections.Counter(p for r in rows for p in categories[r["rowid_pk"]]["purposes"])
     if purpose:
         rows = [r for r in rows if purpose in categories[r["rowid_pk"]]["purposes"]]
-    rows = classification.deduplicate_models(rows)
     total = len(rows)
     page = min(page, max(1, (total + size - 1) // size))
     items = [_row_json(r) for r in rows[(page - 1) * size:page * size]]
     for it in items:
+        it["missing"] = int(not facts.isfile(it["path"]))
         it["partition"] = _partition_of(cfg, it["path"])
         it["classification"] = categories[it["rowid_pk"]]
-    scope_rows = classification.deduplicate_models([r for r in all_rows if not _q(params, "scope") or categories[r["rowid_pk"]]["scope"] == _q(params, "scope")])
+    scope_rows = classification.deduplicate_models([r for r in all_rows if not _q(params, "scope") or categories[r["rowid_pk"]]["scope"] == _q(params, "scope")], facts)
     facet_rows = [r for r in scope_rows if not domain or categories[r["rowid_pk"]]["domain"] == domain]
     facets = {
         "types": sorted({categories[r["rowid_pk"]]["model_role"] for r in facet_rows}),
@@ -334,12 +376,14 @@ def model_detail(db, cfg, params, body):
     row = db.one("SELECT * FROM models WHERE rowid_pk=? AND " + scope, [mid] + args)
     if not row:
         return _err("model not found", 404)
-    d = _row_json(row)
+    d = _row_json(_current_usage(db, cfg, [row])[0])
     d["preview_path"] = _find_preview(d["path"])
     # 相关图片
-    d["images"] = [{"path": r["image_path"], "role": r["role"]} for r in db.query(
-        "SELECT image_path, role FROM img_refs WHERE model_path=? ORDER BY 1 DESC LIMIT 24", (row["path"],))]
-    d["image_total"] = db.one("SELECT COUNT(*) c FROM img_refs WHERE model_path=?", (row["path"],))["c"]
+    image_scope, image_args = _source_scope(cfg, 'output', 'i.path')
+    image_where = ' FROM img_refs r JOIN images i ON i.path=r.image_path WHERE r.model_path=? AND ' + image_scope
+    d['images'] = [{'path': r['image_path'], 'role': r['role']} for r in db.query(
+        'SELECT r.image_path,r.role' + image_where + ' ORDER BY 1 DESC LIMIT 24', [row['path']] + image_args)]
+    d['image_total'] = db.one('SELECT COUNT(*) c' + image_where, [row['path']] + image_args)['c']
     # 重复/多入口
     dups = []
     if d.get("size"):
@@ -361,14 +405,18 @@ def classification_options():
             "scopes": classification.SCOPES, "roles": classification.MODEL_ROLES}
 
 
+@_model_mutation
 def models_classify(db, cfg, params, body):
+    error = _workspace_request_error(cfg, body)
+    if error:
+        return error
     if not isinstance(body, dict) or not isinstance(body.get("ids"), list):
         return _err("请选择需要分类的模型")
     ids = body["ids"]
     if not ids or len(ids) > 200 or any(type(i) is not int or i < 1 for i in ids):
         return _err("每次请选择 1 至 200 个有效模型")
     ids = list(dict.fromkeys(ids))
-    if set(body) - {"ids", "domain", "purposes", "reset", "scope", "model_role", "architecture", "preview"}:
+    if set(body) - {"ids", "domain", "purposes", "reset", "scope", "model_role", "architecture", "preview", "_workspace_root"}:
         return _err("不支持的分类字段")
     if "reset" in body and type(body["reset"]) is not bool:
         return _err("恢复自动分类参数无效")
@@ -392,10 +440,11 @@ def models_classify(db, cfg, params, body):
     if architecture is not None and (not isinstance(architecture, str) or not 1 <= len(architecture.strip()) <= 120 or any(ord(c) < 32 for c in architecture)):
         return _err("架构需为 1 至 120 字符的说明")
     with db.lock:
-        rows = db.query("SELECT path,mtype FROM models WHERE rowid_pk IN (" + ",".join("?" for _ in ids) + ")", ids)
+        scope, scope_args = _source_scope(cfg)
+        rows = db.query('SELECT path,mtype FROM models WHERE rowid_pk IN (' + ','.join('?' for _ in ids) + ') AND ' + scope, ids + scope_args)
         if len(rows) != len(ids):
             return _err("部分模型已不在索引中，请刷新后重试", 404)
-        all_models = db.query("SELECT * FROM models")
+        all_models = _scoped_models(db, cfg)
         labels = db.query("SELECT * FROM model_labels")
         context = classification.classification_context(all_models, management.catalog(cfg), labels)
         pending = []
@@ -445,9 +494,13 @@ def _partition_of(cfg, path):
     return None
 
 
+@_model_mutation
 def model_set_source(db, cfg, params, body):
+    error = _workspace_request_error(cfg, body)
+    if error:
+        return error
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    row = _scoped_model(db, cfg, mid)
     if not row:
         return _err("model not found", 404)
     url = (body or {}).get("url", "").strip()
@@ -465,9 +518,13 @@ def model_set_source(db, cfg, params, body):
     return _json_bytes({"ok": True})
 
 
+@_model_mutation
 def model_check(db, cfg, params, body):
+    error = _workspace_request_error(cfg, body)
+    if error:
+        return error
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    row = _scoped_model(db, cfg, mid)
     if not row:
         return _err("model not found", 404)
     ck = upd.Checker(db, cfg)
@@ -476,9 +533,13 @@ def model_check(db, cfg, params, body):
     return _json_bytes({"result": res, "model": _row_json(fresh)})
 
 
+@_model_mutation
 def model_edit(db, cfg, params, body):
+    error = _workspace_request_error(cfg, body)
+    if error:
+        return error
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    row = _scoped_model(db, cfg, mid)
     if not row:
         return _err("model not found", 404)
     upd_model = {"path": row["path"]}
@@ -490,12 +551,23 @@ def model_edit(db, cfg, params, body):
     return _json_bytes({"ok": True})
 
 
+@_model_mutation
 def check_updates_start(db, cfg, params, body):
+    error = _workspace_request_error(cfg, body)
+    if error:
+        return error
     if jobs.running("check-updates"):
         return _err("更新检查已在运行", 409)
     b = body or {}
     jobs.run_update_check(db, cfg, scope=b.get("scope", "all"), limit=_int(b.get("limit"), 0))
     return _json_bytes({"ok": True})
+
+
+def media_list(db, cfg, params, body):
+    try:
+        return _json_bytes(media.listing(db, cfg, params))
+    except media.MediaError as error:
+        return _err(str(error), error.status)
 
 
 def images_list(db, cfg, params, body):
@@ -678,6 +750,10 @@ def scan_start(db, cfg, params, body):
             return _err("扫描或整理正在运行，请完成后再试", 409)
         if not cfgmod.workspace_status(cfg)["available"]:
             return _err("资产目录不可用，请先设置安全区")
+        try:
+            asset_scan.validate_scan_roots(cfg)
+        except asset_scan.ScanSourceError as exc:
+            return _err(str(exc), 409)
         jobs.run_full_pipeline(db, cfg)
         return _json_bytes({"ok": True})
 
@@ -782,6 +858,18 @@ def workspace_environment_action(db, cfg, params, body):
         try:
             if action == 'preview':
                 return _json_bytes(workspace_manager.preview(cfg, body))
+            if action in {'detach_preview', 'detach_apply'}:
+                if organization.busy():
+                    return _err('扫描或整理期间不能移除工作环境', 409)
+                if action == 'detach_preview':
+                    return _json_bytes(workspace_manager.detach_preview(cfg, body))
+                if set(body) != {'token', '_workspace_root'} or not isinstance(body.get('_workspace_root'), str) or cfgmod._key(body['_workspace_root']) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作环境已切换，请刷新后重试。', 409)
+                result = workspace_manager.detach_apply(cfg, body['token'])
+                if APP_CFG is not cfg:
+                    APP_CFG.clear()
+                    APP_CFG.update(cfg)
+                return _json_bytes(result)
             if action != 'apply':
                 return _err('未知工作环境操作')
             if organization.busy():
@@ -984,7 +1072,7 @@ def thumb(db, cfg, params, body):
 def model_reveal(db, cfg, params, body):
     """在 Windows 资源管理器中定位模型文件。"""
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    row = _scoped_model(db, cfg, mid)
     if not row:
         return _err("model not found", 404)
     path = row["path"]
@@ -1000,7 +1088,7 @@ def model_reveal(db, cfg, params, body):
 
 def resolve_source_api(db, cfg, params, body):
     mid = _int(params.get("id"))
-    row = db.one("SELECT * FROM models WHERE rowid_pk=?", (mid,))
+    row = _scoped_model(db, cfg, mid)
     if not row:
         return _err("model not found", 404)
     ck = upd.Checker(db, cfg)
@@ -1063,6 +1151,17 @@ def context_reveal(db, cfg, params, body):
     return _json_bytes({'ok': True})
 
 
+def registry_read(db, cfg, params, body):
+    """Expected registry read failures stay readable and preserve damaged files."""
+    try:
+        read = management.registration_backups if params.get('backups') else management.registry_snapshot
+        return _json_bytes(read(cfg))
+    except (ValueError, TypeError) as error:
+        return _err(str(error), 400)
+    except OSError as error:
+        return _err(str(error), 409)
+
+
 def registry_request(db, cfg, params, body):
     action = _q(params, "action")
     if not isinstance(body, dict):
@@ -1091,7 +1190,7 @@ def workcenter_request(db, cfg, params, body):
     import copy
     action = _q(params, 'action')
     try:
-        if action in {'classify', 'reveal'}:
+        if action in {'classify', 'reveal', 'removal-preview', 'removal-apply', 'removal-restore'}:
             if not isinstance(body, dict):
                 return _err('工作中心请求必须是对象')
             with organization.LOCK:
@@ -1099,6 +1198,11 @@ def workcenter_request(db, cfg, params, body):
                 if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
                     return _err('工作环境已切换，请刷新后重试。', 409)
                 payload = {k: v for k, v in body.items() if k != '_workspace_root'}
+                if action.startswith('removal-'):
+                    handler = {'removal-preview': workcenter.removal_preview,
+                               'removal-apply': workcenter.removal_apply,
+                               'removal-restore': workcenter.removal_restore}[action]
+                    return _json_bytes(handler(cfg, body))
                 if action == 'classify':
                     return _json_bytes(workcenter.classify(cfg, payload))
                 if set(payload) != {'document_id'}:
@@ -1111,6 +1215,8 @@ def workcenter_request(db, cfg, params, body):
         query = {k: _q(params, k) for k in params if k != 'action'}
         if action == 'documents':
             result = workcenter.list_documents(snapshot, query)
+        elif action == 'removals':
+            result = workcenter.removal_list(snapshot, query)
         elif action == 'projects':
             result = workcenter.list_projects(snapshot, query)
         elif action == 'document':
@@ -1224,23 +1330,22 @@ ROUTES = [
     ('GET', r'^/api/harnesses$', harness_request),
     ('GET', r'^/api/harnesses/(?P<action>discover|check|config)$', harness_request),
     ('POST', r'^/api/harnesses/(?P<action>save)$', harness_request),
-    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document)$', workcenter_request),
-    ('POST', r'^/api/workcenter/(?P<action>classify|reveal)$', workcenter_request),
+    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document|removals)$', workcenter_request),
+    ('POST', r'^/api/workcenter/(?P<action>classify|reveal|removal-preview|removal-apply|removal-restore)$', workcenter_request),
     ('POST', r'^/api/context/reveal$', context_reveal),
     ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
     ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch|sources)$', capabilities_request),
     ("GET", r"^/api/workspace/status$", workspace_environment_status),
-    ("POST", r"^/api/workspace/(?P<action>preview|apply)$", workspace_environment_action),
+    ("POST", r"^/api/workspace/(?P<action>preview|apply|detach_preview|detach_apply)$", workspace_environment_action),
     ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
     ("GET", r"^/api/projects$", lambda db, cfg, params, body: _json_bytes(management.projects(cfg))),
-    ("GET", r"^/api/registry$", lambda db, cfg, params, body: _json_bytes(management.registry_snapshot(cfg))),
-    ("GET", r"^/api/registry/backups$", lambda db, cfg, params, body: _json_bytes(management.registration_backups(cfg))),
+    ("GET", r"^/api/registry(?P<backups>/backups)?$", registry_read),
     ("POST", r"^/api/registry/(?P<action>preview|save|restore-preview|evidence)$", registry_request),
     ("POST", r"^/api/workspace/setup$", workspace_setup),
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.2", "desktop_shell_version": "2.13.2", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.10", "desktop_shell_version": "2.13.10", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),
@@ -1253,6 +1358,7 @@ ROUTES = [
     ("POST", r"^/api/model/(?P<id>\d+)/edit$", model_edit),
     ("POST", r"^/api/model/(?P<id>\d+)/reveal$", model_reveal),
     ("POST", r"^/api/models/check-updates$", check_updates_start),
+    ("GET", r"^/api/media$", media_list),
     ("GET", r"^/api/images$", images_list),
     ("POST", r"^/api/image/delete$", image_delete),
     ("GET", r"^/api/usage/ranking$", usage_ranking),
@@ -1273,8 +1379,60 @@ ROUTES = [
 ]
 
 
-def dispatch(db, cfg, method, path, params, body):
+def dispatch(db, cfg, method, path, params, body, *, public_identity=None, execution_bearer=None, execution_owner=False):
+    if path.startswith('/api/execution/'):
+        from . import execution, interop
+        operation = path.removeprefix('/api/execution/')
+        if params:
+            return _json_bytes({'error': '执行接口不接受查询参数。', 'code': 'invalid_request'}, 400)
+        if method != 'POST' and not (method == 'GET' and operation == 'describe' and not params):
+            return _json_bytes({'error': '执行接口需要 POST 请求。', 'code': 'invalid_request'}, 400)
+        try:
+            with organization.LOCK:
+                result = execution.execute(cfg, operation, {} if method == 'GET' else body,
+                                           bearer=execution_bearer, public_identity=public_identity,
+                                           owner_authorized=execution_owner)
+            return _json_bytes(result)
+        except execution.ExecutionError as error:
+            return _json_bytes({'error': str(error), 'code': error.code}, error.http_status)
+        except interop.InteropError as error:
+            return _json_bytes({'error': str(error), 'code': error.code}, error.http_status)
+        except (ValueError, TypeError, UnicodeError):
+            return _json_bytes({'error': '执行请求格式无效。', 'code': 'invalid_request'}, 400)
+        except (OSError, sqlite3.Error):
+            return _json_bytes({'error': '执行账本暂不可用；请按原请求编号查询。', 'code': 'storage_unavailable'}, 503)
+    if method == 'GET' and path in {'/api/interop/describe', '/api/interop/capability-snapshot'}:
+        from . import interop, collaboration_api
+        action = 'interop_describe' if path.endswith('/describe') else 'interop_capability_snapshot'
+        try:
+            payload = {}
+            for key, value in params.items():
+                if isinstance(value, list):
+                    if len(value) != 1:
+                        return _json_bytes({'error': '查询参数不能重复。', 'code': 'invalid_request'}, 400)
+                    value = value[0]
+                if not isinstance(value, str):
+                    return _json_bytes({'error': '查询参数须为文本。', 'code': 'invalid_request'}, 400)
+                payload[key] = value
+            with organization.LOCK:
+                result = collaboration_api.execute(cfg, action, payload, public_identity=public_identity)
+            return _json_bytes(result)
+        except interop.InteropError as error:
+            return _json_bytes({'error': str(error), 'code': error.code}, error.http_status)
+        except (ValueError, TypeError):
+            return _json_bytes({'error': '联动查询参数无效。', 'code': 'invalid_request'}, 400)
+        except (OSError, sqlite3.Error):
+            return _json_bytes({'error': '联动只读存储暂不可用。', 'code': 'storage_unavailable'}, 503)
     # Collaboration has its own root-partitioned store; never changes model data.
+    if path == '/api/collaboration/report_delivery_status' and method == 'GET':
+        from . import report_delivery
+        try:
+            expected = _q(params, '_workspace_root')
+            if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                raise ValueError('工作环境已切换，请刷新协作页面。')
+            return _json_bytes(report_delivery.status(cfg))
+        except (ValueError, OSError):
+            return _err('报告提交队列不可用，请刷新当前工作环境。', 400)
     if path == '/api/collaboration/status' and method == 'GET':
         from . import collaboration_api
         try:
@@ -1286,10 +1444,13 @@ def dispatch(db, cfg, method, path, params, body):
     match = re.fullmatch(r'/api/collaboration/(mcp/)?([a-z_]+)', path)
     if match and method == 'POST':
         from . import collaboration_api
+        from . import interop
         try:
             with organization.LOCK:
                 return _json_bytes(collaboration_api.execute(cfg, match[2], body,
-                                   actor='mcp' if match[1] else 'ui'))
+                                   actor='mcp' if match[1] else 'ui', public_identity=public_identity))
+        except interop.InteropError as error:
+            return _json_bytes({'error': str(error), 'code': error.code}, error.http_status)
         except PermissionError as error:
             return _err(str(error), 403)
         except (ValueError, TypeError) as error:

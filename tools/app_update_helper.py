@@ -30,7 +30,7 @@ MAX_EXPANDED_BYTES = 200 * 1024 * 1024
 MAX_FILES = 10000
 SHA_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
 TX_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
-VERSION_RE = __import__("re").compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+VERSION_RE = __import__("re").compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
 ROOT_FILES = {"server.py", "launcher.pyw", "start.vbs", "start.bat", "debug.bat", ".gitignore",
               "THIRD_PARTY_NOTICES.md", "README.md", "AGENTS.md"}
 SUBDIR_EXTS = {"aihub": {".py"}, "frontend": {".js", ".html", ".css", ".svg", ".ico", ".png"},
@@ -46,6 +46,13 @@ class SafeFailure(Exception):
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def valid_version(value):
+    match = VERSION_RE.fullmatch(value) if isinstance(value, str) else None
+    return bool(match and (not match.group(4) or not any(
+        part.isdigit() and len(part) > 1 and part.startswith("0")
+        for part in match.group(4).split("."))))
 
 
 def regular(path):
@@ -332,7 +339,7 @@ def verify_ticket(ticket_path):
         raise SafeFailure("package path or digest mismatch")
     if package.stat().st_size > MAX_PACKAGE_BYTES:
         raise SafeFailure("package too large")
-    if not VERSION_RE.fullmatch(str(ticket.get("version", ""))):
+    if not valid_version(ticket.get("version")):
         raise SafeFailure("version invalid")
     if not isinstance(ticket.get("source_commit"), str) or not __import__("re").fullmatch("[0-9a-f]{40}", ticket["source_commit"]):
         raise SafeFailure("source commit invalid")
@@ -522,20 +529,37 @@ def verify_baseline(ticket, root, rows):
 
 def verify_installed_ledger(root, current):
     manifest = read_json(root / "manifest.json", 4 * 1024 * 1024)
-    if not isinstance(manifest, dict) or not {"version", "desktop_shell_version", "files"}.issubset(manifest):
+    # Public ZIPs carry the raw archive ledger. Only its exact Windows schema
+    # may omit the shell version; in-place installs still require both versions.
+    archive_ledger = (isinstance(manifest, dict)
+                      and set(manifest) == {"version", "kind", "user_data_included", "files"}
+                      and manifest.get("kind") == "Windows-x64"
+                      and manifest.get("user_data_included") is False
+                      and "AI Hub.exe" in current)
+    if not isinstance(manifest, dict) or (not archive_ledger and not {"version", "desktop_shell_version", "files"}.issubset(manifest)):
         raise SafeFailure("installed ledger invalid")
+    if not valid_version(manifest.get("version")):
+        raise SafeFailure("installed ledger version invalid")
+    if not archive_ledger and (not valid_version(manifest.get("desktop_shell_version"))
+                               or manifest["desktop_shell_version"] != manifest["version"]):
+        raise SafeFailure("installed ledger shell version mismatch")
+    if (("kind" in manifest and manifest["kind"] != "Windows-x64")
+            or ("user_data_included" in manifest and manifest["user_data_included"] is not False)):
+        raise SafeFailure("installed ledger package identity invalid")
     entries = manifest.get("files")
-    if not isinstance(entries, list) or not entries:
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_FILES:
         raise SafeFailure("installed ledger inventory invalid")
-    recorded = {}
+    recorded, seen = {}, set()
     for row in entries:
         if not isinstance(row, dict) or not {"path", "bytes", "sha256"}.issubset(row):
             raise SafeFailure("installed ledger row invalid")
         name = safe_relative(row["path"])
+        if (name.casefold() in seen or type(row["bytes"]) is not int or row["bytes"] < 0
+                or not isinstance(row["sha256"], str) or not SHA_RE.fullmatch(row["sha256"])):
+            raise SafeFailure("installed ledger row invalid")
+        seen.add(name.casefold())
         if name == "AGENTS.md":
             continue
-        if name in recorded or type(row["bytes"]) is not int or not isinstance(row["sha256"], str) or not SHA_RE.fullmatch(row["sha256"]):
-            raise SafeFailure("installed ledger row invalid")
         recorded[name] = row
     current = {name: digest for name, digest in current.items() if name != "AGENTS.md"}
     if set(recorded) != set(current):

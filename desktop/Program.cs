@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Drawing;
@@ -17,15 +17,27 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("曜核")]
 [assembly: AssemblyDescription("曜核 本地资产与协作管理桌面终端")]
 [assembly: AssemblyProduct("曜核")]
-[assembly: AssemblyVersion("2.13.2.0")]
-[assembly: AssemblyFileVersion("2.13.2.0")]
+[assembly: AssemblyVersion("2.13.10.0")]
+[assembly: AssemblyFileVersion("2.13.10.0")]
 
 namespace AIHub.Desktop
 {
     internal static class Program
     {
+        static Program()
+        {
+            // The product requires .NET Framework 4.8. Configure modern path IO
+            // before any application path access, without changing machine policy.
+            AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+            AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
+        }
+
         internal static EventWaitHandle ActivateEvent;
         internal static string LoaderFolder;
+        private static readonly object libraryLock = new object();
+        private static readonly Dictionary<string, Assembly> libraries = new Dictionary<string, Assembly>(StringComparer.Ordinal);
+        private static bool resolverRegistered;
+        private const string EmbeddedSdkVersion = "1.0.4191.47";
 
         [STAThread]
         private static int Main(string[] args)
@@ -66,6 +78,8 @@ namespace AIHub.Desktop
                             Hub.Log("desktop_startup_deferred update_transaction_after_mutex");
                             return 0;
                         }
+                        if (Path.Combine(Hub.Cache, "WebView2").Length >= 260)
+                            throw new PathTooLongException("程序目录过深，浏览器工作目录超过支持长度。请将完整软件放到较短的目录，并保留或备份原 data/。项目和资产不需要移动。");
                         Directory.CreateDirectory(Hub.Cache);
                         SetCurrentProcessExplicitAppUserModelID("AIHub.Desktop");
                         PrepareLibraries();
@@ -95,21 +109,57 @@ namespace AIHub.Desktop
             }
         }
 
+        private static string ComponentIOPath(string path)
+        {
+            // Keep the installation identity and profile unchanged. Only immutable
+            // component IO receives the Win32 extended path form when necessary.
+            if (path.Length < 240 || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+            return path.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + path.Substring(2) : @"\\?\" + path;
+        }
+
+        private static string ComponentIdentityPath(string path)
+        {
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + path.Substring(8);
+            return path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path.Substring(4) : path;
+        }
+
+        private static string ComponentFolder(string kind, string digest, string filename)
+        {
+            string folder = Path.Combine(Hub.Cache, kind, digest);
+            if (Path.Combine(folder, filename).Length < 240) return folder;
+            // Framework assembly binding rejects extended paths even when file IO
+            // supports them. Keep only immutable runtime components in a shorter,
+            // installation-scoped cache; never move the profile or private data.
+            string installation = Hub.Identity(Hub.Root.ToUpperInvariant()).Substring(0, 24);
+            folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AIHub", "components", installation, kind, digest);
+            if (Path.Combine(folder, filename).Length >= 240)
+                throw new PathTooLongException("运行组件缓存路径过长。请将程序放到较短的目录，再保留原 data/ 启动。");
+            return folder;
+        }
+
         private static void PrepareLibraries()
         {
-            AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs e)
+            lock (libraryLock)
             {
-                string name = new AssemblyName(e.Name).Name;
-                if (name != "Microsoft.Web.WebView2.Core" && name != "Microsoft.Web.WebView2.WinForms") return null;
-                return Assembly.Load(Resource(name + ".dll"));
-            };
+                if (!resolverRegistered)
+                {
+                    AppDomain.CurrentDomain.AssemblyResolve += ResolveLibrary;
+                    resolverRegistered = true;
+                }
+                // Load into one binding context before the JIT sees HubWindow. Loading
+                // the same resource repeatedly with Assembly.Load(byte[]) creates
+                // separate type identities, even for identical FullName and MVID.
+                LoadLibrary("Microsoft.Web.WebView2.Core");
+                LoadLibrary("Microsoft.Web.WebView2.WinForms");
+            }
             byte[] loader = Resource("WebView2Loader.dll");
             string digest;
             using (var sha = System.Security.Cryptography.SHA256.Create())
                 digest = BitConverter.ToString(sha.ComputeHash(loader)).Replace("-", "");
-            LoaderFolder = Path.Combine(Hub.Cache, "loader", digest);
-            Directory.CreateDirectory(LoaderFolder);
-            string target = Path.Combine(LoaderFolder, "WebView2Loader.dll");
+            LoaderFolder = ComponentFolder("loader", digest, "WebView2Loader.dll");
+            Directory.CreateDirectory(ComponentIOPath(LoaderFolder));
+            string target = ComponentIOPath(Path.Combine(LoaderFolder, "WebView2Loader.dll"));
             if (!File.Exists(target)) File.WriteAllBytes(target, loader);
             else
             {
@@ -119,11 +169,79 @@ namespace AIHub.Desktop
             }
         }
 
+        private static Assembly ResolveLibrary(object sender, ResolveEventArgs e)
+        {
+            var requested = new AssemblyName(e.Name);
+            if (requested.Name != "Microsoft.Web.WebView2.Core" && requested.Name != "Microsoft.Web.WebView2.WinForms") return null;
+            lock (libraryLock)
+            {
+                var library = LoadLibrary(requested.Name);
+                var actual = library.GetName();
+                if (requested.Version != null && requested.FullName != actual.FullName)
+                    throw new FileLoadException("WebView2 组件版本不匹配：" + requested.FullName);
+                return library;
+            }
+        }
+
+        private static Assembly LoadLibrary(string name)
+        {
+            Assembly library;
+            if (libraries.TryGetValue(name, out library)) return library;
+            byte[] bytes = Resource(name + ".dll");
+            string digest;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                digest = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "");
+            string folder = ComponentFolder("sdk", digest, name + ".dll");
+            Directory.CreateDirectory(ComponentIOPath(folder));
+            string target = ComponentIOPath(Path.Combine(folder, name + ".dll"));
+            bool valid = false;
+            if (File.Exists(target))
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                    valid = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(target))).Replace("-", "") == digest;
+            if (!valid) File.WriteAllBytes(target, bytes);
+            var expected = AssemblyName.GetAssemblyName(target);
+            if (expected.Name != name || expected.Version.ToString() != EmbeddedSdkVersion)
+                throw new FileLoadException("EXE 内 WebView2 组件身份不匹配：" + name);
+            // AssemblyResolve cannot intercept a DLL found by normal probing. Check
+            // every adjacent candidate before binding; identical SDK bytes may use
+            // the default context, while stale/replaced files must fail closed.
+            string nearby = null;
+            foreach (string directory in new[] { AppDomain.CurrentDomain.BaseDirectory,
+                Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) })
+            {
+                string adjacent = ComponentIOPath(Path.Combine(directory, name + ".dll"));
+                if (!File.Exists(adjacent)) continue;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                    if (BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(adjacent))).Replace("-", "") != digest)
+                        throw new FileLoadException("程序旁存在与内嵌版本不匹配的 WebView2 组件：\n" + adjacent +
+                            "\n\n请将完整新包解压到新的空程序目录，并按升级说明保留 data/。不要删除项目、原目录或数据。");
+                // Long adjacent SDK paths were verified above, but the Framework
+                // binder cannot consume their extended form. Bind the same verified
+                // bytes from the short component cache instead.
+                if (nearby == null && ComponentIdentityPath(adjacent).Length < 240) nearby = adjacent;
+            }
+            // Do not silently accept a component supplied by a neighboring DLL or
+            // an earlier resolver. Such an instance may already define other types.
+            foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
+                if (loaded.GetName().Name == name)
+                    throw new FileLoadException("WebView2 组件已从非受控位置载入：" + name);
+            if (nearby != null) target = nearby;
+            library = nearby != null ? Assembly.Load(expected) : Assembly.LoadFrom(target);
+            if (library.FullName != expected.FullName || !String.Equals(ComponentIdentityPath(library.Location), ComponentIdentityPath(target), StringComparison.OrdinalIgnoreCase))
+                throw new FileLoadException("WebView2 组件载入身份不匹配：" + name);
+            libraries.Add(name, library);
+            // Establish the default full-name binding as well, before a normal
+            // reference from Program/HubWindow can probe and create another copy.
+            if (!Object.ReferenceEquals(library, Assembly.Load(library.FullName)))
+                throw new FileLoadException("WebView2 组件绑定出现重复实例：" + name);
+            return library;
+        }
+
         // Resolve embedded WebView2 assemblies before the JIT sees the window type.
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static void RunWindow()
         {
-            CoreWebView2Environment.SetLoaderDllFolderPath(LoaderFolder);
+            CoreWebView2Environment.SetLoaderDllFolderPath(ComponentIOPath(LoaderFolder));
             using (var window = new HubWindow()) Application.Run(window);
         }
 
@@ -153,8 +271,10 @@ namespace AIHub.Desktop
         private readonly ContextMenuStrip trayMenu;
         private readonly ToolStripMenuItem retryItem;
         private readonly ToolStripMenuItem updateItem;
+        private readonly ToolStripMenuItem executionAccessItem;
         private readonly ToolStripMenuItem exitItem;
         private AppUpdateDialog updateDialog;
+        private ExecutionAccessDialog executionAccessDialog;
         private AppUpdateInstall activeInstall;
         private Task<string> serviceStartup;
         private bool initializing;
@@ -164,6 +284,7 @@ namespace AIHub.Desktop
         private bool resourcesReleased;
         private bool loaded;
         private bool installingUpdate;
+        private readonly AppUpdateUiReady uiReady = new AppUpdateUiReady();
 
         internal HubWindow()
         {
@@ -181,15 +302,18 @@ namespace AIHub.Desktop
             var openItem = new ToolStripMenuItem("打开曜核");
             openItem.Click += delegate { BringToUser(); };
             retryItem = new ToolStripMenuItem("重试打开工作台") { Enabled = false };
-            retryItem.Click += async delegate { BringToUser(); await InitializeAsync(); };
+            retryItem.Click += async delegate { BringToUser(); await InitializeSafelyAsync(); };
             updateItem = new ToolStripMenuItem("软件更新…");
             updateItem.Click += delegate { ShowUpdateDialog(); };
+            executionAccessItem = new ToolStripMenuItem("协作接入…");
+            executionAccessItem.Click += delegate { ShowExecutionAccessDialog(); };
             exitItem = new ToolStripMenuItem("退出曜核（含后台）");
             exitItem.Click += async delegate { await ExitAsync(); };
             trayMenu.Items.Add(openItem);
             trayMenu.Items.Add(retryItem);
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add(updateItem);
+            trayMenu.Items.Add(executionAccessItem);
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add(exitItem);
             tray = new NotifyIcon { Icon = Icon, Text = "曜核 · 本地 AI 工作台", ContextMenuStrip = trayMenu, Visible = true };
@@ -208,7 +332,7 @@ namespace AIHub.Desktop
                 if (IsDisposed || !IsHandleCreated) return;
                 try { BeginInvoke((Action)BringToUser); } catch (InvalidOperationException) { }
             }, null, Timeout.Infinite, false);
-            Shown += async delegate { await InitializeAsync(); };
+            Shown += async delegate { await InitializeSafelyAsync(); };
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -252,7 +376,7 @@ namespace AIHub.Desktop
 
         protected override void WndProc(ref Message message)
         {
-            base.WndProc(ref message);
+            HandleSessionMessage(ref message);
             if (message.Msg == 0x001A && startupAnimation != null)
                 startupAnimation.RefreshMotionPreference();
         }
@@ -264,6 +388,22 @@ namespace AIHub.Desktop
             Show();
             Activate();
             SetForegroundWindow(Handle);
+        }
+
+        // A failure while JIT-compiling InitializeAsync occurs before that method's
+        // own try/catch. Keep the event boundary free of SDK method signatures.
+        private async Task InitializeSafelyAsync()
+        {
+            try { await InitializeAsync(); }
+            catch (Exception error)
+            {
+                initializing = false;
+                if (StartupInterruptedByExit()) return;
+                loaded = false;
+                Hub.Log("window_initialization_error " + error.GetType().Name + ": " + error.Message);
+                ShowFailure("桌面运行组件未能初始化：" + error.Message +
+                    "\n\n可从托盘重试；若仍失败，请将完整新包解压到新的空程序目录，并按升级说明保留 data/。不要删除项目或数据。");
+            }
         }
 
         private async Task InitializeAsync()
@@ -325,7 +465,9 @@ namespace AIHub.Desktop
                         !Hub.IsTrustedUpdateMessageSource(e.Source, core.Source, Hub.Url)) return;
                     try
                     {
-                        if (e.TryGetWebMessageAsString() == "open-app-update") ShowUpdateDialog();
+                        string message = e.TryGetWebMessageAsString();
+                        if (message == "open-app-update") ShowUpdateDialog();
+                        else if (message == "open-execution-access") ShowExecutionAccessDialog();
                     }
                     catch { }
                 };
@@ -338,7 +480,7 @@ namespace AIHub.Desktop
                 {
                     if (!exiting && !closing.IsCancellationRequested) ShowFailure("页面运行环境意外退出。请从托盘菜单选择“重试打开工作台”。");
                 };
-                core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
+                core.NavigationCompleted += async delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
                 {
                     if (StartupInterruptedByExit()) return;
                     if (!e.IsSuccess)
@@ -356,6 +498,7 @@ namespace AIHub.Desktop
                         Hub.Log("window_ready runtime=" + environment.BrowserVersionString + " console=" + (GetConsoleWindow() != IntPtr.Zero));
                         web.Focus();
                     }
+                    await uiReady.NotifyAsync();
                 };
                 core.Navigate(Hub.Url + "#/overview");
             }
@@ -388,9 +531,12 @@ namespace AIHub.Desktop
         private async Task ExitAsync()
         {
             if (exiting || closing.IsCancellationRequested) return;
+            if (executionAccessDialog != null && executionAccessDialog.IsBusy) { ShowExecutionAccessDialog(); return; }
             exiting = true;
+            if (executionAccessDialog != null && !executionAccessDialog.IsDisposed) executionAccessDialog.SetHostAvailable(false);
             SyncStartupVisibility();
             retryItem.Enabled = false;
+            executionAccessItem.Enabled = false;
             exitItem.Enabled = false;
             tray.Text = "曜核 · 正在退出后台…";
             try
@@ -436,6 +582,7 @@ namespace AIHub.Desktop
                 if (!closing.IsCancellationRequested)
                 {
                     exiting = false;
+                    if (executionAccessDialog != null && !executionAccessDialog.IsDisposed) executionAccessDialog.SetHostAvailable(true);
                     if (initializationInterrupted)
                     {
                         initializationInterrupted = false;
@@ -448,33 +595,31 @@ namespace AIHub.Desktop
                     }
                     SyncStartupVisibility();
                     exitItem.Enabled = true;
+                    executionAccessItem.Enabled = true;
                     retryItem.Enabled = !initializing;
                     tray.Text = "曜核 · 本地 AI 工作台";
                 }
             }
         }
 
-        internal async void InstallReadyUpdate(bool automatic)
+        internal async Task InstallReadyUpdateAsync(bool automatic)
         {
             if (automatic || exiting || closing.IsCancellationRequested || installingUpdate) return;
+            if (executionAccessDialog != null && executionAccessDialog.IsBusy) { ShowExecutionAccessDialog(); return; }
             exiting = true;
             installingUpdate = true;
+            if (executionAccessDialog != null && !executionAccessDialog.IsDisposed) executionAccessDialog.SetHostAvailable(false);
             SyncStartupVisibility();
             retryItem.Enabled = false;
             updateItem.Enabled = false;
+            executionAccessItem.Enabled = false;
             exitItem.Enabled = false;
             tray.Text = "曜核 · 正在准备软件更新…";
             try
             {
                 if (serviceStartup != null) { try { await serviceStartup; } catch { } }
                 if (closing.IsCancellationRequested) return;
-                Dictionary<string, object> updateStatus;
-                try { updateStatus = await Task.Run(() => AppUpdateApi.Status()); }
-                catch (Exception e)
-                {
-                    MessageBox.Show(this, e.Message, "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
+                Dictionary<string, object> updateStatus = await Task.Run(() => AppUpdateApi.Status());
                 await TryInstallReadyUpdateAsync(updateStatus, true, false);
             }
             finally
@@ -483,8 +628,10 @@ namespace AIHub.Desktop
                 if (!closing.IsCancellationRequested)
                 {
                     exiting = false;
+                    if (executionAccessDialog != null && !executionAccessDialog.IsDisposed) executionAccessDialog.SetHostAvailable(true);
                     SyncStartupVisibility();
                     updateItem.Enabled = true;
+                    executionAccessItem.Enabled = true;
                     exitItem.Enabled = true;
                     retryItem.Enabled = !initializing && !loaded;
                     tray.Text = "曜核 · 本地 AI 工作台";
@@ -494,6 +641,14 @@ namespace AIHub.Desktop
 
         private async Task<UpdateAttempt> TryInstallReadyUpdateAsync(Dictionary<string, object> updateStatus, bool restart, bool automatic)
         {
+            bool wasEnabled = web != null && web.Enabled;
+            if (web != null) web.Enabled = false;
+            try { return await TryInstallReadyUpdateCoreAsync(updateStatus, restart, automatic); }
+            finally { if (web != null && !web.IsDisposed) web.Enabled = wasEnabled; }
+        }
+
+        private async Task<UpdateAttempt> TryInstallReadyUpdateCoreAsync(Dictionary<string, object> updateStatus, bool restart, bool automatic)
+        {
             if (!ClearFinishedUpdateHelper()) return UpdateAttempt.Blocked;
             if (AppUpdateDialog.Value(updateStatus, "state") != "ready")
             {
@@ -502,17 +657,14 @@ namespace AIHub.Desktop
             }
 
             bool? dirty = await HasUnsavedChangesAsync();
-            if (dirty == null)
+            if (!AppUpdateInstallGuard.CanInstall(dirty))
             {
-                if (!automatic) MessageBox.Show(this, "目前无法确认页面是否有未保存内容。请保存页面后重试安装。", "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return UpdateAttempt.Skipped;
-            }
-            if (dirty.Value)
-            {
-                DialogResult answer = MessageBox.Show(this,
-                    "页面有编辑过的内容。请先保存；继续将关闭工作台，未保存内容会丢失。",
-                    "曜核 · 保存页面内容", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
-                if (answer != DialogResult.Yes) return UpdateAttempt.Cancelled;
+                BringToUser();
+                MessageBox.Show(this, dirty == null ?
+                    "目前无法确认页面是否有未保存内容。请保存页面后重试安装。" :
+                    "页面有未保存内容。请先保存，再安装更新。曜核和后台保持运行。",
+                    "曜核 · 保存页面内容", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return UpdateAttempt.Blocked;
             }
 
             AppUpdateInstall install = null;
@@ -563,7 +715,7 @@ namespace AIHub.Desktop
                     return UpdateAttempt.Blocked;
                 }
             }
-            if (!automatic) MessageBox.Show(this, operationError.Message, "曜核 · 软件更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!automatic) throw new InvalidOperationException(operationError.Message, operationError);
             return UpdateAttempt.Skipped;
         }
 
@@ -615,12 +767,26 @@ namespace AIHub.Desktop
             if (updateDialog == null || updateDialog.IsDisposed)
             {
                 updateDialog = new AppUpdateDialog();
-                updateDialog.InstallRequested += delegate { InstallReadyUpdate(false); };
+                updateDialog.InstallRequested += delegate { return InstallReadyUpdateAsync(false); };
                 updateDialog.FormClosed += delegate { updateDialog = null; };
             }
             if (!updateDialog.Visible) updateDialog.Show(this);
             updateDialog.BringToFront();
             updateDialog.Activate();
+        }
+
+        private void ShowExecutionAccessDialog()
+        {
+            if (exiting || closing.IsCancellationRequested || installingUpdate) return;
+            BringToUser();
+            if (executionAccessDialog == null || executionAccessDialog.IsDisposed)
+            {
+                executionAccessDialog = new ExecutionAccessDialog();
+                executionAccessDialog.FormClosed += delegate { executionAccessDialog = null; };
+            }
+            if (!executionAccessDialog.Visible) executionAccessDialog.Show(this);
+            executionAccessDialog.BringToFront();
+            executionAccessDialog.Activate();
         }
 
         private void OpenWebLink(string address)
@@ -652,6 +818,24 @@ namespace AIHub.Desktop
                 }
             }
             catch { }
+        }
+
+        private void HandleSessionMessage(ref Message message)
+        {
+            // .NET Framework queries owned forms before the owner's OnFormClosing.
+            // Mark the query interval first, so a busy child cannot veto session end.
+            // Ordinary user close retains its separate tray/busy behavior.
+            var dialog = executionAccessDialog;
+            if (message.Msg == 0x0011) // WM_QUERYENDSESSION
+            {
+                if (dialog != null && !dialog.IsDisposed) dialog.SetSystemEnding(true);
+                try { base.WndProc(ref message); }
+                finally { if (dialog != null && !dialog.IsDisposed) dialog.SetSystemEnding(false); }
+                return;
+            }
+            if (message.Msg == 0x0016 && dialog != null && !dialog.IsDisposed) // WM_ENDSESSION
+                dialog.SetSystemEnding(message.WParam != IntPtr.Zero);
+            base.WndProc(ref message);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)

@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
@@ -30,6 +31,17 @@ namespace AIHub.Desktop
             internal readonly bool Stopped;
             internal readonly string Message;
             internal ShutdownResult(bool stopped, string message) { Stopped = stopped; Message = message; }
+        }
+
+        internal sealed class PythonCandidate
+        {
+            internal readonly string Executable;
+            internal readonly string PrefixArguments;
+            internal PythonCandidate(string executable, string prefixArguments = "")
+            {
+                Executable = executable;
+                PrefixArguments = prefixArguments;
+            }
         }
 
         internal static bool HideOnClose(bool userClosing, bool exitApproved)
@@ -141,7 +153,7 @@ namespace AIHub.Desktop
                     {
                         int status = (int)response.StatusCode;
                         response.Dispose();
-                        if (status == 409) return new ShutdownResult(false, "后台正在处理任务，已保留托盘和工作台。请等待任务完成后再次退出。");
+                        if (status == 409) return new ShutdownResult(false, "本机仍有扫描、更新或数据操作正在执行，已保留托盘和工作台。请等待操作完成后再次退出。");
                     }
                     throw;
                 }
@@ -340,6 +352,8 @@ namespace AIHub.Desktop
         private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint capacity, uint flags);
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern SafeWaitHandle OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")]
+        private static extern uint GetOEMCP();
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetProcessTimes(SafeWaitHandle handle, out long created, out long exited, out long kernel, out long user);
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -429,47 +443,306 @@ namespace AIHub.Desktop
                 using (var reader = new StreamReader(response.GetResponseStream()))
                 {
                     var health = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
-                    object name;
-                    return health != null && health.TryGetValue("app", out name) && (name as string) == "ai-hub";
+                    return TextValue(health, "app") == "ai-hub" &&
+                        TextValue(health, "control_protocol") == ControlProtocol &&
+                        !String.IsNullOrWhiteSpace(TextValue(health, "service_instance_id")) &&
+                        !String.IsNullOrWhiteSpace(TextValue(health, "install_root")) &&
+                        String.Equals(NormalizeRoot(TextValue(health, "install_root")), Root, StringComparison.OrdinalIgnoreCase);
                 }
             }
             catch { return false; }
         }
 
-        private static IEnumerable<string> PythonCandidates()
+        private static bool IsWindowsStoreAlias(string path)
         {
-            yield return Path.Combine(Root, "runtime", "python.exe");
+            return !String.IsNullOrWhiteSpace(path) &&
+                path.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static async Task<byte[]> ReadBoundedBytesAsync(Stream stream, int maximumBytes)
+        {
+            using (var value = new MemoryStream())
+            {
+                var buffer = new byte[512];
+                int count;
+                while ((count = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+                {
+                    if (value.Length + count > maximumBytes) throw new InvalidDataException("Python probe output exceeded its limit.");
+                    value.Write(buffer, 0, count);
+                }
+                return value.ToArray();
+            }
+        }
+
+        internal static string DecodePythonProbeOutput(byte[] output)
+        {
+            try { return new UTF8Encoding(false, true).GetString(output ?? new byte[0]); }
+            catch { return null; }
+        }
+
+        internal static IList<string> ParsePythonLauncherBytes(byte[] output)
+        {
+            byte[] bytes = output ?? new byte[0];
+            IList<string> paths = ParsePythonLauncherOutput(DecodePythonProbeOutput(bytes));
+            if (paths.Count > 0) return paths;
+            var codePages = new List<int> { Encoding.Default.CodePage };
+            try
+            {
+                int oemCodePage = (int)GetOEMCP();
+                if (!codePages.Contains(oemCodePage)) codePages.Add(oemCodePage);
+            }
+            catch { }
+            foreach (int codePage in codePages)
+            {
+                try
+                {
+                    var encoding = Encoding.GetEncoding(codePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+                    paths = ParsePythonLauncherOutput(encoding.GetString(bytes));
+                    if (paths.Count > 0) return paths;
+                }
+                catch { }
+            }
+            return new List<string>();
+        }
+
+        internal static string ParsePythonProbeResult(string output)
+        {
+            try
+            {
+                using (var reader = new StringReader(output ?? ""))
+                {
+                    Version version;
+                    string versionText = reader.ReadLine();
+                    string executable = reader.ReadLine();
+                    if (!Version.TryParse(versionText, out version) || version.Major != 3 || version.Minor < 9 ||
+                        String.IsNullOrWhiteSpace(executable)) return null;
+                    string fullPath = Path.GetFullPath(executable.Trim());
+                    return !IsWindowsStoreAlias(fullPath) && File.Exists(fullPath) ? fullPath : null;
+                }
+            }
+            catch { return null; }
+        }
+
+        internal static IList<string> ParsePythonLauncherOutput(string output)
+        {
+            var paths = new List<string>();
+            using (var reader = new StringReader(output ?? ""))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    for (int i = 0; i + 2 < line.Length; i++)
+                    {
+                        if (!Char.IsLetter(line[i]) || line[i + 1] != ':' ||
+                            (line[i + 2] != '\\' && line[i + 2] != '/')) continue;
+                        string path = line.Substring(i).Trim().Trim('"');
+                        if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                            !IsWindowsStoreAlias(path) && File.Exists(path)) paths.Add(path);
+                        break;
+                    }
+                }
+            }
+            return paths;
+        }
+
+        private static IEnumerable<string> PathExecutables(string searchPath, string name)
+        {
+            if (String.IsNullOrWhiteSpace(searchPath)) yield break;
+            foreach (string rawDirectory in searchPath.Split(Path.PathSeparator))
+            {
+                string directory = (rawDirectory ?? "").Trim().Trim('"');
+                if (directory.Length == 0 || IsWindowsStoreAlias(directory)) continue;
+                string path;
+                try { path = Path.GetFullPath(Path.Combine(directory, name)); }
+                catch { continue; }
+                if (!IsWindowsStoreAlias(path) && File.Exists(path)) yield return path;
+            }
+        }
+
+        private static IList<string> PythonLauncherExecutables(string launcher)
+        {
+            var paths = new List<string>();
+            if (String.IsNullOrWhiteSpace(launcher) || IsWindowsStoreAlias(launcher) || !HasExecutablePeHeaders(launcher)) return paths;
+            try
+            {
+                var start = new ProcessStartInfo(Path.GetFullPath(launcher), "-0p") {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true
+                };
+                using (var process = Process.Start(start))
+                {
+                    if (process == null) return paths;
+                    var output = ReadBoundedBytesAsync(process.StandardOutput.BaseStream, 65536);
+                    if (!process.WaitForExit(1500))
+                    {
+                        try { process.Kill(); } catch { }
+                        try { process.WaitForExit(500); } catch { }
+                        return paths;
+                    }
+                    if (process.ExitCode != 0) return paths;
+                    if (!output.Wait(500) || output.IsFaulted || output.IsCanceled) return paths;
+                    return ParsePythonLauncherBytes(output.GetAwaiter().GetResult());
+                }
+            }
+            catch { }
+            return paths;
+        }
+
+        internal static IEnumerable<PythonCandidate> PythonCandidates(string searchPath)
+        {
+            yield return new PythonCandidate(Path.Combine(Root, "runtime", "python.exe"));
             var installs = new List<KeyValuePair<Version, string>>();
             foreach (RegistryHive hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
             foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
             {
-                using (var root = RegistryKey.OpenBaseKey(hive, view))
-                using (var core = root.OpenSubKey(@"Software\Python\PythonCore"))
+                try
                 {
-                    if (core == null) continue;
-                    foreach (string tag in core.GetSubKeyNames())
+                    using (var root = RegistryKey.OpenBaseKey(hive, view))
+                    using (var core = root.OpenSubKey(@"Software\Python\PythonCore"))
                     {
-                        Version version;
-                        if (!Version.TryParse(tag.Split('-')[0], out version) || version.Major != 3 || version.Minor < 9) continue;
-                        using (var install = core.OpenSubKey(tag + @"\InstallPath"))
+                        if (core == null) continue;
+                        foreach (string tag in core.GetSubKeyNames())
                         {
-                            if (install == null) continue;
-                            string path = install.GetValue("ExecutablePath") as string;
-                            string directory = install.GetValue("") as string;
-                            if (String.IsNullOrEmpty(path) && !String.IsNullOrEmpty(directory)) path = Path.Combine(directory, "python.exe");
-                            if (!String.IsNullOrEmpty(path)) installs.Add(new KeyValuePair<Version, string>(version, path));
+                            Version version;
+                            if (!Version.TryParse(tag.Split('-')[0], out version) || version.Major != 3 || version.Minor < 9) continue;
+                            using (var install = core.OpenSubKey(tag + @"\InstallPath"))
+                            {
+                                if (install == null) continue;
+                                string path = install.GetValue("ExecutablePath") as string;
+                                string directory = install.GetValue("") as string;
+                                if (String.IsNullOrWhiteSpace(path) && !String.IsNullOrWhiteSpace(directory)) path = Path.Combine(directory.Trim().Trim('"'), "python.exe");
+                                if (!String.IsNullOrWhiteSpace(path)) installs.Add(new KeyValuePair<Version, string>(version, path.Trim().Trim('"')));
+                            }
                         }
                     }
                 }
+                catch { }
             }
             installs.Sort((a, b) => b.Key.CompareTo(a.Key));
-            foreach (var entry in installs) yield return entry.Value;
+            foreach (var entry in installs)
+                if (!IsWindowsStoreAlias(entry.Value)) yield return new PythonCandidate(entry.Value);
+            foreach (PythonCandidate candidate in PathPythonCandidates(searchPath)) yield return candidate;
+        }
+
+        internal static IEnumerable<PythonCandidate> PathPythonCandidates(string searchPath)
+        {
+            foreach (string path in PathExecutables(searchPath, "python.exe")) yield return new PythonCandidate(path);
+            foreach (string path in PathExecutables(searchPath, "python3.exe")) yield return new PythonCandidate(path);
+            int launchersChecked = 0;
+            foreach (string launcher in PathExecutables(searchPath, "py.exe"))
+            {
+                if (++launchersChecked > 3) yield break;
+                foreach (string path in PythonLauncherExecutables(launcher)) yield return new PythonCandidate(path);
+            }
         }
 
         internal static string FindPython()
         {
-            foreach (string path in PythonCandidates()) if (File.Exists(path)) return Path.GetFullPath(path);
-            throw new FileNotFoundException("未找到 Python 3.9 或更新版本。请保留原 Python 安装，或把运行环境放到曜核的 runtime 文件夹。");
+            return FindPython(PythonCandidates(Environment.GetEnvironmentVariable("PATH")));
+        }
+
+        internal static string FindPython(IEnumerable<PythonCandidate> candidates)
+        {
+            var timer = Stopwatch.StartNew();
+            int examined = 0;
+            foreach (PythonCandidate candidate in candidates)
+            {
+                if (++examined > 32 || timer.ElapsedMilliseconds >= 10000) break;
+                int timeout = (int)Math.Min(2500, 10000 - timer.ElapsedMilliseconds);
+                string path = ProbePython(candidate, timeout);
+                if (!String.IsNullOrWhiteSpace(path)) return path;
+            }
+            throw new FileNotFoundException("未找到可运行的 Python 3.9 或更新版本。请检查原 Python 安装，或把有效运行环境放到曜核的 runtime 文件夹。");
+        }
+
+        // Reject obvious malformed executables before Process.Start, which itself
+        // has no managed timeout. This is a bounded header sanity check, not loader
+        // validation or proof that starting an otherwise valid image cannot block.
+        internal static bool HasExecutablePeHeaders(string path)
+        {
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(stream))
+                {
+                    long length = stream.Length;
+                    if (length < 64) return false;
+                    byte[] dos = reader.ReadBytes(64);
+                    if (dos.Length != 64 || dos[0] != 'M' || dos[1] != 'Z') return false;
+                    long offset = BitConverter.ToUInt32(dos, 60);
+                    if (offset < 64 || offset > length - 24) return false;
+                    stream.Position = offset;
+                    byte[] coff = reader.ReadBytes(24);
+                    if (coff.Length != 24 || BitConverter.ToUInt32(coff, 0) != 0x00004550) return false;
+                    int sections = BitConverter.ToUInt16(coff, 6);
+                    int optionalSize = BitConverter.ToUInt16(coff, 20);
+                    int flags = BitConverter.ToUInt16(coff, 22);
+                    if (BitConverter.ToUInt16(coff, 4) == 0 || sections < 1 || sections > 96 ||
+                        (flags & 2) == 0 || (flags & 0x2000) != 0 || optionalSize < 96) return false;
+                    long table = offset + 24 + optionalSize;
+                    long tableEnd = table + sections * 40L;
+                    if (tableEnd > length) return false;
+                    byte[] optional = reader.ReadBytes(Math.Min(optionalSize, 112));
+                    int magic = BitConverter.ToUInt16(optional, 0);
+                    // PE32 and PE32+ are both valid: 32-bit Python remains eligible.
+                    int minimum = magic == 0x10b ? 96 : magic == 0x20b ? 112 : 0;
+                    if (minimum == 0 || optionalSize < minimum || optional.Length < minimum) return false;
+                    uint headerSize = BitConverter.ToUInt32(optional, 60);
+                    if (headerSize < tableEnd || headerSize > length) return false;
+                    stream.Position = table;
+                    bool hasPayload = false;
+                    for (int i = 0; i < sections; i++)
+                    {
+                        byte[] section = reader.ReadBytes(40);
+                        if (section.Length != 40) return false;
+                        uint size = BitConverter.ToUInt32(section, 16);
+                        uint start = BitConverter.ToUInt32(section, 20);
+                        if (size == 0) continue;
+                        if (start < headerSize || (long)start + size > length) return false;
+                        hasPayload = true;
+                    }
+                    return hasPayload;
+                }
+            }
+            catch { return false; }
+        }
+
+        private static string ProbePython(PythonCandidate candidate, int timeoutMilliseconds)
+        {
+            if (candidate == null || String.IsNullOrWhiteSpace(candidate.Executable) ||
+                IsWindowsStoreAlias(candidate.Executable) || timeoutMilliseconds <= 0 || !HasExecutablePeHeaders(candidate.Executable))
+                return null;
+            try
+            {
+                const string probe = "import sys; print('%d.%d.%d' % sys.version_info[:3]); print(sys.executable)";
+                string prefix = String.IsNullOrWhiteSpace(candidate.PrefixArguments) ? "" : candidate.PrefixArguments.Trim() + " ";
+                var start = new ProcessStartInfo(Path.GetFullPath(candidate.Executable), prefix + "-c " + Quote(probe)) {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = false
+                };
+                start.StandardOutputEncoding = Encoding.UTF8;
+                start.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+                using (var process = Process.Start(start))
+                {
+                    if (process == null) return null;
+                    var output = ReadBoundedBytesAsync(process.StandardOutput.BaseStream, 4096);
+                    if (!process.WaitForExit(timeoutMilliseconds))
+                    {
+                        try { process.Kill(); } catch { }
+                        try { process.WaitForExit(500); } catch { }
+                        return null;
+                    }
+                    if (process.ExitCode != 0) return null;
+                    if (!output.Wait(500) || output.IsFaulted || output.IsCanceled) return null;
+                    return ParsePythonProbeResult(DecodePythonProbeOutput(output.GetAwaiter().GetResult()));
+                }
+            }
+            catch { return null; }
         }
 
         internal static bool ReadStartupReceipt(string requestId)

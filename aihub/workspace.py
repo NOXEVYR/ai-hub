@@ -15,6 +15,7 @@ VERSION = 1
 TOKEN_SECONDS = 600
 _lock = threading.RLock()
 _previews = {}
+_detach_previews = {}
 _discovery_cache = {}
 ENFORCEMENT = {'mode': 'soft', 'description': '规则约束与来源健康检查；未启用操作系统硬隔离，也不监控其他 AI 的全部文件写入。'}
 MANAGED = '00_Management/AIHub'
@@ -22,6 +23,85 @@ MANAGED = '00_Management/AIHub'
 
 def _digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def detach_preview(cfg, body):
+    """Disconnect configuration only; never delete a workspace or its records."""
+    from . import collaboration
+    if not isinstance(body, dict) or set(body) != {'_workspace_root'}:
+        raise ValueError('移除工作环境请求字段不合法。')
+    root = cfg.get('ai_root') or ''
+    if not root or not isinstance(body['_workspace_root'], str) or config._key(body['_workspace_root']) != config._key(root):
+        raise ValueError('工作环境已切换，请刷新后重新操作。')
+    if not collaboration.can_stop(cfg):
+        raise ValueError('仍有待办或正在执行的协作任务，请先完成、交接或移除待办任务。')
+    with _lock:
+        now = time.time()
+        for key in list(_detach_previews):
+            if _detach_previews[key]['expires_at'] <= now:
+                del _detach_previews[key]
+        if len(_detach_previews) >= 100:
+            raise ValueError('待确认预览过多，请稍后再试。')
+        token = uuid.uuid4().hex
+        _detach_previews[token] = {'root': root, 'revision': _revision(cfg),
+            'config_path': config._key(config.CONFIG_PATH), 'expires_at': now + TOKEN_SECONDS}
+        return {'token': token, 'root': root, 'can_apply': True,
+                'warnings': ['将解除当前工作环境，停止使用其模型和图库来源。',
+                    '不会删除磁盘目录、模型、报告、长期记忆或工具原生数据；重新接管相同目录后可继续访问记录。',
+                    '现有 MCP 会话需要重新连接；表单中尚未应用的修改不会保存。']}
+
+
+def detach_apply(cfg, token):
+    from . import collaboration
+    with _lock:
+        pending = _detach_previews.get(token) if isinstance(token, str) else None
+        if not pending or pending['expires_at'] <= time.time():
+            raise ValueError('确认已过期，请重新预览移除工作环境。')
+        if pending['config_path'] != config._key(config.CONFIG_PATH) or pending['revision'] != _revision(cfg):
+            raise ValueError('工作环境或配置已变化，未移除；请重新预览。')
+        if not collaboration.can_stop(cfg):
+            raise ValueError('工作环境有新的待办或正在执行的任务，不能移除。')
+        data_dir = Path(config.CONFIG_PATH).parent
+        config._check_ancestors(str(data_dir))
+        data_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = data_dir / '.workspace-apply.lock'
+        try:
+            handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise ValueError('另一个工作区保存正在进行，请稍后重新预览。') from None
+        try:
+            lock_info = os.fstat(handle)
+            lock_state = {'exists': True, 'identity': [lock_info.st_dev, lock_info.st_ino],
+                          'size': lock_info.st_size, 'mtime_ns': str(lock_info.st_mtime_ns),
+                          'sha256': _digest(b'')}
+        finally:
+            os.close(handle)
+        try:
+            if pending['revision'] != _revision(cfg):
+                raise ValueError('配置已变化，未移除。')
+            backup_dir = data_dir / 'workspace-backups'
+            config._check_ancestors(str(backup_dir))
+            backup_dir.mkdir(exist_ok=True)
+            backup = backup_dir / ('config-detach-' + uuid.uuid4().hex + '.json')
+            if Path(config.CONFIG_PATH).exists():
+                config._read_config(str(config.CONFIG_PATH))
+            prior = Path(config.CONFIG_PATH).read_bytes() if Path(config.CONFIG_PATH).exists() else _encoded(cfg)
+            _exclusive_file(backup, prior)
+            updated = copy.deepcopy(cfg)
+            updated.update(ai_root='', workspace_managed=False, scan_roots=[], output_roots=[],
+                aliases={}, catalog_dir='', organizer={'enabled': False, 'root': '', 'on_startup': False})
+            config.save_config(updated)
+            cfg.clear()
+            cfg.update(updated)
+            del _detach_previews[token]
+            return {'applied': True, 'root': '', 'disconnected_root': pending['root'],
+                    'files_deleted': 0, 'backup_path': str(backup), 'status': status(cfg)}
+        finally:
+            try:
+                if _file_state(lock_path) == lock_state:
+                    lock_path.unlink()
+            except (OSError, ValueError):
+                pass
 
 
 def _encoded(value):
@@ -134,6 +214,8 @@ def _documents(root):
 适用根目录：`{root}`。这些规则是 AI 可读取的软约束与人工审计依据，不是操作系统硬隔离，也不代表已开启全盘写入监控。
 
 - 开始任务先读最近的 AGENTS.md、项目 README 和本文件。现有用户规则保持有效；更近的项目约定优先。
+- 使用曜核 MCP 时先读取 submission_schema 和 memory_search；完成任务优先使用 report_submit 提交分类报告与 memory_candidates。稳定约定、关键决策和可复用结论进入候选，无长期价值则用空数组；候选由用户审核，报告本身不会自动成为已批准记忆。
+- 本任务创建的临时页面、服务和目录用 resource_register 登记精确身份与归属；完成或交接前仅处理自己的独占临时资源，并用 resource_cleanup_report 上报带时间的检查结果。无法检查或控制时标记待人工处理，不关闭其他任务、共享或用户窗口。
 - 软件与运行环境进 10_Apps；模型进 20_Models；素材进 30_Assets；创作项目进 40_Projects；训练项目进 50_Training/Projects。
 - 工作流进 60_Workflows；通用工具出图落地区为 70_Output；可复用知识进 80_Knowledge；归档进 90_Archive；管理记录进 00_Management。
 - 每个任务必须先明确所属项目、输入、过程、输出、正式交付目录；无项目时先请用户指定，不在任意磁盘位置产生正式交付。
@@ -142,6 +224,8 @@ def _documents(root):
 - 模型与数据集保持只读；旧联接与硬链接是兼容入口，不是独立备份，不以重复名称为由删除或合并。
 - 模型分类分别记录创作用途（图片、视频、音频等）、组件角色（主模型、LoRA、VAE、编码器等）和兼容架构。VAE 不代表通用兼容；缺少证据时保留待确认，文件名只作建议，不据此确认架构。
 - 创建目录不等于完成资产分类。请在曜核模型列表的“调整分类”或“批量分类”中保存标签，再核对筛选结果；只移动目录不会同步用途标签。保留人工分类，整理建议列明原路径、用途、组件角色、兼容架构、依据及待确认项，不自行搬动模型。
+- 通过曜核 MCP 协作提交成果时，先读取 submission_schema，领取任务后只使用返回的指定目录。artifact_write / artifact_register 必须声明文档用途 category；所属项目、任务与提交工作端由任务和客户端身份确定，不能靠文件名或自行填写冒认。
+- 文档用途与保留策略分开：kind 决定报告、交付或临时目录与保留规则，category 只表达报告、方案、需求、参考等用途。正式报告和交付默认保留；长期记忆须引用报告并单独提交审核，提交成果不等于批准记忆。
 - 写入根目录外、移动/删除既有资产、修改权限、安装环境或下载大文件之前，遵循用户已有授权与项目规则；不得自行扩大任务范围。
 - 不输出凭据、私密配置或登录数据。发现路径冲突或无权限时停止该写入，记录原因。
 
@@ -164,6 +248,7 @@ AI Hub 仅管理明确配置的来源；扫描应由用户另行启动。未登�
 新项目需先在 40_Projects/<唯一项目名>（训练用 50_Training/Projects/<唯一项目名>）明确创建目录并放置项目 AGENTS.md。
 项目 AGENTS.md 应记录上述允许写入范围、命名与版本、验证步骤、交付位置和禁止覆盖的输入；规则是软约束，不声称系统已阻止越界写入。
 结束时在 README 记录本次文件清单、验证结果和交付链接；不要将结果留在无关聊天工作目录或根目录。
+通过曜核 MCP 提交时先读 submission_schema，为每份产物声明 category，并按已领取任务返回的路径提交；报告与交付默认保留，临时资料单独声明 kind=temp。未接入 MCP 的既有文件只会作为来源索引，不自动视为已提交或已确认分类。
 '''
     agents = '# AI 工作区入口\n\n先阅读 [AI Hub 工作区规则](00_Management/AIHub/WORKSPACE.md) 与最近的项目 AGENTS.md。\n正式文件仅放在已约定的项目目录；这些规则是软约束，不是系统硬隔离。\n'
     manifest = {'owner': 'AIHub.workspace', 'version': VERSION, 'root': str(base),
@@ -268,13 +353,35 @@ def preview(cfg, body):
         return result
 
 
-def _exclusive_file(path, content):
+def _exclusive_file(path, content, created_files=None):
     config._check_ancestors(str(Path(path).parent))
-    with open(path, 'xb') as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
-    return _file_state(path)
+    with open(path, 'xb', buffering=0) as stream:
+        opened = os.fstat(stream.fileno())
+        try:
+            remaining = memoryview(content)
+            while remaining:
+                written = stream.write(remaining)
+                if not written or written > len(remaining):
+                    raise OSError('工作区文件写入未完成。')
+                remaining = remaining[written:]
+            stream.flush()
+            os.fsync(stream.fileno())
+        finally:
+            # Register partial writes too. An external replacement or edit must
+            # never become rollback authority merely because we opened the path.
+            try:
+                actual = _file_state(path)
+                ours = (actual.get('identity') == [opened.st_dev, opened.st_ino]
+                        and actual['size'] <= len(content)
+                        and actual['sha256'] == _digest(content[:actual['size']]))
+                if ours and created_files is not None:
+                    created_files.append((Path(path), actual))
+            except (OSError, ValueError):
+                pass
+    actual = _file_state(path)
+    if actual.get('identity') != [opened.st_dev, opened.st_ino] or actual['sha256'] != _digest(content):
+        raise ValueError('工作区文件在写入期间改变，保留现有文件。')
+    return actual
 
 
 def apply(cfg, token):
@@ -328,14 +435,19 @@ def apply(cfg, token):
                         path.mkdir()
                         created_dirs.append((path, _root_state(path)))
             for path, content in documents.items():
-                saved_state = _exclusive_file(path, content)
-                created_files.append((Path(path), saved_state))
+                _exclusive_file(path, content, created_files)
             # Recheck all retained files and all source boundaries before config commit.
             for path, expected in states.items():
                 if expected['exists']:
                     actual = _file_state(path) if 'sha256' in expected else _root_state(path)
                     if actual != expected:
                         raise ValueError('已有文件或目录在保存期间改变，配置未保存。')
+            for path, expected in created_files:
+                if _file_state(path) != expected:
+                    raise ValueError('新建工作区规则在保存期间改变，配置未保存。')
+            for path, expected in created_dirs:
+                if _root_state(path) != expected:
+                    raise ValueError('新建工作区目录在保存期间改变，配置未保存。')
             invalid = [r for r in _health(fresh['root'], fresh['sources'], cfg) if r['status'] != 'ok']
             if invalid:
                 raise ValueError('来源在保存期间失效，配置未保存。')

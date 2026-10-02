@@ -2,6 +2,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,17 @@ loader.exec_module(launcher)
 
 
 class DesktopStartupReceiptTests(unittest.TestCase):
+    def test_health_only_reuses_the_current_installation(self):
+        own = {"app": "ai-hub", "control_protocol": "ai-hub-local-control-v1",
+               "service_instance_id": "fixture-instance", "install_root": str(self.root)}
+        cases = [(own, True), ({**own, "install_root": str(self.root / "other")}, False),
+                 ({"app": "ai-hub"}, False), ({**own, "service_instance_id": ""}, False), ([], False)]
+        for data, accepted in cases:
+            opener = mock.Mock()
+            opener.open.return_value = io.BytesIO(json.dumps(data).encode())
+            with mock.patch.object(launcher.urllib.request, "build_opener", return_value=opener):
+                self.assertEqual(launcher.health(12345) is not None, accepted)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="aihub-startup-receipt-")
         self.addCleanup(self.temporary.cleanup)

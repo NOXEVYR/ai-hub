@@ -146,3 +146,9 @@ test('discovery may be empty or limited and cannot replace candidates after work
   root='E:/Other';await h.key('refresh').onclick();resolve({items:[{suggested_id:'stale',name:'Old candidate'}]});await pending;assert(!h.key('candidates').innerHTML.includes('Old candidate'));assert.match(h.key('candidates').innerHTML,/重新发现/);assert.equal(h.key('discover').disabled,false);
   const empty=harness({records:[],handler:url=>url==='/api/harnesses/discover'?{items:[],limitations:['运行进程源不可用']}:undefined});await empty.page();await empty.key('discover').onclick();assert.match(empty.key('candidates').innerHTML,/本次未找到候选/);assert.match(empty.key('candidates').innerHTML,/仍可手动/);assert.match(empty.key('candidates').innerHTML,/运行进程源不可用/);
 });
+
+
+test('discovery explains limits and metadata evidence without exposing raw implementation objects',async()=>{
+  const h=harness({handler:url=>url==='/api/harnesses/discover'?{items:[{suggested_id:'worker',name:'Worker',executable:'D:/Tool.exe',evidence:'file_metadata_only'}],scan_scope:{path_directories_limit:64,candidate_limit:128,process_limit:256,registry_entry_limit:400,soft_time_budget_seconds:2,registers_automatically:false},sources:{path:{status:'ok',checked:3}},limitations:['有限范围检查']}:undefined});await h.page();await h.key('discover').onclick();const html=h.key('candidates').innerHTML;
+  assert.match(html,/仅检查运行程序、安装登记、PATH 和常见入口/);assert.match(html,/发现不会自动登记/);assert.match(html,/仅检查入口文件信息/);assert.match(html,/发现时间预算：2 秒/);assert.match(html,/PATH 目录上限：64 个/);assert.doesNotMatch(html,/file_metadata_only|soft_time_budget_seconds|registers_automatically/);assert(!html.includes('近期连接'));
+});

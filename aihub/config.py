@@ -88,13 +88,20 @@ def validate_asset_root(root, must_exist=True):
     return path
 
 
-def scan_excluded(path, cfg=None):
+def scan_excluded(path, cfg=None, *, strict_io=False):
     """Shared read-only scanner guard for application data and organized aliases."""
     try:
         if _is_reparse(os.lstat(path)):
             return True
     except (OSError, TypeError, ValueError):
+        if strict_io:
+            raise
         return True
+    return scan_path_excluded(path, cfg)
+
+
+def scan_path_excluded(path, cfg=None):
+    """Configured path exclusions, including paths that are currently absent."""
     cfg = cfg or {}
     excludes = [APP_DIR, DATA_DIR] + list(cfg.get('scan_exclude_paths') or [])
     if any(isinstance(p, str) and p and _within(path, p) for p in excludes):

@@ -14,10 +14,24 @@ PROTOCOL = 'ai-hub-local-control-v1'
 
 class ActivityGate:
     """Admission and idle shutdown share one lock, including background work."""
-    def __init__(self):
+    def __init__(self, stop_guard=None):
         self._lock = threading.Lock()
         self._active = 0
         self.stopping = False
+        self._stop_guard = None
+        self.set_stop_guard(stop_guard)
+
+    def set_stop_guard(self, callback):
+        """Install a read-only guard; it must not call back into this gate.
+
+        The callback runs under admission's lock, only when no admitted work is
+        active. Only literal True permits stopping; errors retain the service.
+        External processes that do not use this gate are outside its boundary.
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError('stop guard must be callable or None')
+        with self._lock:
+            self._stop_guard = callback
 
     def enter(self):
         with self._lock:
@@ -34,6 +48,12 @@ class ActivityGate:
         with self._lock:
             if self._active:
                 return False
+            if self._stop_guard is not None:
+                try:
+                    if self._stop_guard() is not True:
+                        return False
+                except Exception:
+                    return False
             self.stopping = True
             return True
 

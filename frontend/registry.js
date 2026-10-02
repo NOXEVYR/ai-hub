@@ -5,6 +5,7 @@
   else root.AIHubRegistry = moduleAPI;
 })(typeof globalThis === 'object' ? globalThis : this, function() {
   'use strict';
+  const bindDraft = (container, key, transfer=false) => globalThis.AIHubAppUpdate?.bind(container, key, {transfer}) || {snapshot(){},saved(){},changed(){return false;},edit(){},discard(){}};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const TYPES = {creative:'创作项目',training:'模型训练',tool:'工具开发'};
   const STATES = {pending:'待验证',path_checked:'仅路径检查',historical_passed:'历史执行通过',current_passed:'当前复验通过'};
@@ -15,7 +16,7 @@
   function verificationBadge(state) {
     return `<span class="badge ${state==='current_passed'?'b-green':state==='pending'?'b-yellow':''}">${esc(STATES[state] || STATES.pending)}</span>`;
   }
-  function editor(env, kind, record, snapshot, done) {
+  function editor(env, kind, record, snapshot, done, session) {
     const {api,openModal,closeModal,toast} = env;
     const input=(id,label,value='',type='text')=>`<label class="registry-field">${label}<input id="reg-${id}" type="${type}" value="${esc(value)}" autocomplete="off"></label>`;
     const area=(id,label,value='')=>`<label class="registry-field wide">${label}<textarea id="reg-${id}" rows="3" spellcheck="false">${esc(value)}</textarea></label>`;
@@ -48,19 +49,29 @@
     } else {
       fields+=input('title','知识标题',record.title)+input('path','教程正文路径',record.path);
     }
-    openModal(`<div class="registry-editor"><div class="eyebrow">REGISTER & REVIEW</div><h2>${title}</h2><p class="muted">保存位置与证据映射。预览不会移动文件或执行工作流。</p><form id="registry-form"><div class="registry-fields">${fields}</div><p id="registry-error" class="dialog-error" role="alert"></p><div class="dialog-actions"><button type="button" class="btn" id="registry-cancel">取消</button><button type="submit" class="btn primary">检查并预览</button></div></form></div>`);
+    openModal(`<div class="registry-editor"><div class="eyebrow">REGISTER & REVIEW</div><h2>${title}</h2><p class="muted">保存位置与证据映射。预览不会移动文件或执行工作流。</p><form id="registry-form" data-app-draft-scope="registry-form"><div class="registry-fields">${fields}</div><p id="registry-error" class="dialog-error" role="alert"></p><div class="dialog-actions"><button type="button" class="btn" id="registry-cancel">取消</button><button type="submit" class="btn primary">检查并预览</button></div></form></div>`);
     const form=document.querySelector('#registry-form'),get=id=>form.querySelector('#reg-'+id)?.value.trim()||'';
-    document.querySelector('#registry-cancel').onclick=closeModal;
+    session=session||{alive:true,key:'registry:'+JSON.stringify([snapshot.workspace||'',kind,get('id')])};
+    const draft=bindDraft(form,session.key);session.draft=draft;
+    const modal=document.querySelector('#modal'),mask=document.querySelector('#modal-mask');
+    if(modal)modal.onModalClose=()=>{session.alive=false;draft.discard();};
+    const generation=mask?.dataset?.modalGeneration;
+    const active=()=>session.alive&&form.isConnected&&(!mask||(!mask.classList?.contains?.('hidden')&&mask.dataset?.modalGeneration===generation));
+    const fieldIds=[...fields.matchAll(/id="reg-([^"]+)"/g)].map(m=>m[1]);
+    const values=()=>JSON.stringify(fieldIds.map(id=>form.querySelector('#reg-'+id)?.value));
+    let request=0;
+    document.querySelector('#registry-cancel').onclick=()=>{session.alive=false;draft.discard();closeModal();};
     const evidenceButton=form.querySelector('#registry-evidence');
     if(evidenceButton)evidenceButton.onclick=async()=>{
-      evidenceButton.disabled=true;const error=form.querySelector('#registry-error');error.textContent='';
+      const before=values();evidenceButton.disabled=true;const error=form.querySelector('#registry-error');error.textContent='';
       try {
         const evidence=await api('/api/registry/evidence',{body:{workflow_path:get(kind==='run'?'workflow_path':'path'),dependencies:kind==='workflow'?lines(get('dependency_paths')):[],outputs:kind==='workflow'?lines(get('output_paths')):[]}});
-        if(!form.isConnected)return;
+        if(!active())return;
+        if(values()!==before){error.textContent='表单已变化，已保留新输入。请重新读取证据。';return;}
         form.querySelector('#reg-workflow_sha256').value=evidence.workflow_sha256;
         if(kind==='workflow'){form.querySelector('#reg-dependencies').value=JSON.stringify(evidence.dependencies,null,2);form.querySelector('#reg-outputs').value=JSON.stringify(evidence.outputs,null,2);}
-        toast('已读取文件信息；验证结论与日期仍需根据实际执行记录填写','ok');
-      }catch(e){if(form.isConnected)error.textContent=e.message;}
+        draft.edit();toast('已读取文件信息；验证结论与日期仍需根据实际执行记录填写','ok');
+      }catch(e){if(active())error.textContent=e.message;}
       finally{if(evidenceButton.isConnected)evidenceButton.disabled=false;}
     };
     if(kind==='run') {
@@ -69,7 +80,7 @@
       form.querySelector('#reg-project_id').onchange=suggest;form.querySelector('#reg-id').oninput=suggest;suggest();
     }
     form.onsubmit=async event=>{
-      event.preventDefault();const error=form.querySelector('#registry-error');error.textContent='';
+      event.preventDefault();const serial=++request,before=values(),submitted=draft.snapshot();const error=form.querySelector('#registry-error');error.textContent='';
       try {
         let next={id:get('id')};
         if(kind==='project') {
@@ -83,20 +94,25 @@
         else if(kind==='workflow') next={...next,path:get('path'),state:get('state'),validation:{date:get('date'),workflow_sha256:get('workflow_sha256'),dependencies:JSON.parse(get('dependencies')),outputs:JSON.parse(get('outputs')),note:record.validation?.note||''}};
         else next={...next,title:get('title'),path:get('path')};
         const preview=await api('/api/registry/preview',{body:{kind,record:next}});
-        if(!form.isConnected)return;
-        showPreview(env,preview,()=>editor(env,kind,next,snapshot,done),done);
-      } catch(e) {if(form.isConnected)error.textContent=e.message;}
+        if(!active()||serial!==request)return;
+        if(values()!==before||draft.changed(submitted)){error.textContent='表单已变化，已保留新输入。请重新检查并预览。';return;}
+        showPreview(env,preview,()=>editor(env,kind,next,snapshot,done,session),done,{session,submitted});
+      } catch(e) {if(active()&&serial===request)error.textContent=e.message;}
     };
   }
-  function showPreview(env,preview,back,done) {
+  function showPreview(env,preview,back,done,lifecycle) {
     const {api,openModal,closeModal,toast}=env;
     openModal(`<div class="registry-review"><h2>确认登记预览</h2><p>检查下面的位置与结论后保存。原资产和应用目录保持原位。</p>${(preview.warnings||[]).map(w=>`<p class="warning-note">${esc(w)}</p>`).join('')}<pre class="registry-json">${esc(JSON.stringify(preview.record || preview,null,2))}</pre><p id="registry-error" class="dialog-error" role="alert"></p><div class="dialog-actions"><button class="btn" id="registry-back">返回修改</button><button class="btn primary" id="registry-save">保存登记</button></div></div>`);
+    const session=lifecycle?.session;
+    const mask=document.querySelector('#modal-mask'),modal=document.querySelector('#modal'),generation=mask?.dataset?.modalGeneration;
+    const active=()=>session?.alive!==false&&(!mask||(!mask.classList?.contains?.('hidden')&&mask.dataset?.modalGeneration===generation));
+    if(modal&&session)modal.onModalClose=()=>{session.alive=false;session.draft.discard();};
     document.querySelector('#registry-back').onclick=back || closeModal;
     const button=document.querySelector('#registry-save');
     button.onclick=async()=>{
       button.disabled=true;
-      try {await api('/api/registry/save',{body:{token:preview.token}});if(button.isConnected){closeModal();toast('登记已保存，原资产未改动','ok');done?.();}}
-      catch(e){if(button.isConnected){document.querySelector('#registry-error').textContent=e.message;button.disabled=false;}}
+      try {await api('/api/registry/save',{body:{token:preview.token}});session?.draft.saved(lifecycle.submitted);if(button.isConnected&&active()){closeModal();toast('登记已保存，原资产未改动','ok');done?.();}}
+      catch(e){if(button.isConnected&&active()){document.querySelector('#registry-error').textContent=e.message;button.disabled=false;}}
     };
   }
   function createProjects(env) {
@@ -129,7 +145,8 @@
             const backups=await api('/api/registry/backups');if(!el.isConnected)return;
             openModal(`<h2>登记回退</h2><p>只恢复项目、运行和验证登记。不会改变原资产或模型评分。</p><div class="registry-backups">${backups.items.map(b=>`<button class="btn" data-backup="${esc(b.id)}">${esc(b.name||b.id)}</button>`).join('')||'<p>尚无登记备份。</p>'}</div><p id="registry-error" class="dialog-error"></p>`);
             document.querySelectorAll('[data-backup]').forEach(b=>b.onclick=async()=>{
-              try {const preview=await api('/api/registry/restore-preview',{body:{backup_id:b.dataset.backup}});if(b.isConnected)showPreview(env,preview,closeModal,refresh);}
+              const mask=document.querySelector('#modal-mask'),generation=mask?.dataset?.modalGeneration;
+              try {const preview=await api('/api/registry/restore-preview',{body:{backup_id:b.dataset.backup}});if(b.isConnected&&(!mask||(!mask.classList?.contains?.('hidden')&&mask.dataset?.modalGeneration===generation)))showPreview(env,preview,closeModal,refresh);}
               catch(e){if(b.isConnected)document.querySelector('#registry-error').textContent=e.message;}
             });
           }catch(e){toast(e.message,'err');}

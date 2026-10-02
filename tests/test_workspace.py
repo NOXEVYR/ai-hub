@@ -1,5 +1,6 @@
 """Workspace setup tests touch only generated synthetic directories/configuration."""
 import copy
+import builtins
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,89 @@ class WorkspaceSetup(unittest.TestCase):
 
     def preview(self, **fields):
         return workspace.preview(self.cfg, {'mode': 'create', 'root': str(self.root), **fields})
+
+    def test_partial_write_flush_and_fsync_failures_rollback_and_allow_retry(self):
+        for failure in ('write', 'flush', 'fsync'):
+            with self.subTest(failure=failure):
+                plan = self.preview()
+                before = Path(config.CONFIG_PATH).read_bytes()
+                target_fd = []
+                class Stream:
+                    def __init__(self, stream):
+                        self.stream = stream
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        return self.stream.__exit__(*args)
+                    def fileno(self):
+                        return self.stream.fileno()
+                    def write(self, data):
+                        if failure == 'write':
+                            self.stream.write(data[:16])
+                            raise OSError('synthetic partial write')
+                        return self.stream.write(data)
+                    def flush(self):
+                        if failure == 'flush':
+                            raise OSError('synthetic flush')
+                        self.stream.flush()
+                def opening(path, *args, **kwargs):
+                    stream = builtins.open(path, *args, **kwargs)
+                    if Path(path).name == 'WORKSPACE.md':
+                        target_fd[:] = [stream.fileno()]
+                        return Stream(stream)
+                    return stream
+                real_sync = os.fsync
+                def sync(fd):
+                    if failure == 'fsync' and target_fd == [fd]:
+                        raise OSError('synthetic fsync')
+                    return real_sync(fd)
+                with mock.patch.object(workspace, 'open', side_effect=opening, create=True), mock.patch.object(workspace.os, 'fsync', side_effect=sync):
+                    with self.assertRaisesRegex(OSError, 'synthetic'):
+                        workspace.apply(self.cfg, plan['token'])
+                self.assertFalse(self.root.exists())
+                self.assertEqual(Path(config.CONFIG_PATH).read_bytes(), before)
+                self.assertTrue(self.preview()['can_apply'])
+
+    def test_short_writes_are_completed(self):
+        real_open = builtins.open
+        class Stream:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): return self
+            def __exit__(self, *args): return self.stream.__exit__(*args)
+            def fileno(self): return self.stream.fileno()
+            def flush(self): return self.stream.flush()
+            def write(self, data): return self.stream.write(data[:7])
+        def opening(path, *args, **kwargs):
+            return Stream(real_open(path, *args, **kwargs))
+        with mock.patch.object(workspace, 'open', side_effect=opening, create=True):
+            workspace.apply(self.cfg, self.preview()['token'])
+        for path, _, content in workspace._documents(str(self.root)):
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_failed_write_preserves_external_edit_or_replacement(self):
+        for replacement in (False, True):
+            with self.subTest(replacement=replacement):
+                target = self.base / ('external-%s.md' % replacement)
+                tracked = []
+                class Stream:
+                    def __init__(self, stream): self.stream = stream
+                    def __enter__(self): return self
+                    def __exit__(self, *args): return self.stream.__exit__(*args)
+                    def fileno(self): return self.stream.fileno()
+                    def write(self, data):
+                        self.stream.write(data[:5])
+                        if replacement:
+                            self.stream.close()
+                            target.rename(target.with_suffix('.old'))
+                        target.write_bytes(b'external data')
+                        raise OSError('synthetic external edit')
+                def opening(path, *args, **kwargs):
+                    return Stream(builtins.open(path, *args, **kwargs))
+                with mock.patch.object(workspace, 'open', side_effect=opening, create=True):
+                    with self.assertRaisesRegex(OSError, 'external edit'):
+                        workspace._exclusive_file(target, b'intended content', tracked)
+                self.assertEqual(tracked, [])
+                self.assertEqual(target.read_bytes(), b'external data')
 
     def _junction(self, link, target):
         if os.name == 'nt':

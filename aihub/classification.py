@@ -7,6 +7,7 @@ import collections
 import json
 import os
 import re
+import stat
 
 SCOPES = {"central": "中央模型库", "app-private": "应用私有", "training": "训练产物", "archive": "归档", "unknown": "所属范围待确认"}
 MODEL_ROLES = {"Checkpoint": "主模型", "Diffusion": "扩散模型", "LoRA": "LoRA", "VAE": "VAE",
@@ -20,18 +21,38 @@ def path_key(path):
     return os.path.normcase(os.path.abspath(str(path))) if path else ""
 
 
-def file_identity(path):
+class FileFacts:
+    """One request's filesystem snapshot; never shared between requests."""
+    def __init__(self):
+        self.stats = {}
+
+    def stat(self, path):
+        key = path_key(path)
+        if key not in self.stats:
+            try:
+                self.stats[key] = os.stat(path)
+            except (OSError, ValueError, TypeError):
+                self.stats[key] = None
+        return self.stats[key]
+
+    def identity(self, path):
+        info = self.stat(path)
+        return f"{info.st_dev}:{info.st_ino}" if info and info.st_ino else None
+
+    def isfile(self, path):
+        info = self.stat(path)
+        return bool(info and stat.S_ISREG(info.st_mode))
+
+
+def file_identity(path, facts=None):
     """Metadata only; unavailable identities never group unrelated paths."""
-    try:
-        info = os.stat(path)
-        return f"{info.st_dev}:{info.st_ino}" if info.st_ino else None
-    except (OSError, ValueError, TypeError):
-        return None
+    return (facts or FileFacts()).identity(path)
 
 
-def alias_compatible(primary, alias):
+def alias_compatible(primary, alias, facts=None):
     """Historical paths never override positive evidence of a different file."""
-    left, right = file_identity(primary), file_identity(alias)
+    facts = facts or FileFacts()
+    left, right = file_identity(primary, facts), file_identity(alias, facts)
     return not (left and right and left != right)
 
 
@@ -262,8 +283,12 @@ def classify(model, audit=None, manual=None):
         if architecture_source != "manual":
             architecture_source = "unknown"
     registered = bool(audit)
-    pending = role == "Unknown" or scope == "unknown" or domain == "unknown" or domain_source == "filename" or architecture == "未确认" or (is_lora and "uncategorized" in reasons)
-    return {"scope": scope, "scope_label": SCOPES[scope], "model_role": role, "model_role_label": MODEL_ROLES[role],
+    evidence = model.get("model_evidence", "extension")
+    if str(model.get("ext") or os.path.splitext(model.get("path", ""))[1]).lower() == ".bin" and "model_evidence" not in model:
+        evidence = meta.bin_model_evidence(model.get("path", ""), model.get("size"),
+            registered=registered, manual=manual.get("model_role") in MODEL_ROLES and manual.get("model_role") != "Unknown")
+    pending = evidence == "candidate" or role == "Unknown" or scope == "unknown" or domain == "unknown" or domain_source == "filename" or architecture == "未确认" or (is_lora and "uncategorized" in reasons)
+    return {"model_evidence": evidence, "model_evidence_pending": evidence == "candidate", "scope": scope, "scope_label": SCOPES[scope], "model_role": role, "model_role_label": MODEL_ROLES[role],
             "model_role_source": role_source, "architecture": architecture, "architecture_source": architecture_source,
             "indexed": bool(model.get("rowid_pk") or model.get("indexed")), "registered": registered,
             "classification_pending": pending, "registration_status": "registered" if registered else "indexed" if model.get("rowid_pk") or model.get("indexed") else "discovered",
@@ -278,24 +303,25 @@ def classify(model, audit=None, manual=None):
             "manual_purposes": _object(manual.get("purposes"), []) if manual.get("purposes") is not None else None}
 
 
-def decorate(rows, catalog, labels):
-    context = classification_context(rows, catalog, labels)
+def decorate(rows, catalog, labels, facts=None):
+    context = classification_context(rows, catalog, labels, facts)
     return {row["rowid_pk"]: classify(**context_for(context, row["path"])) for row in rows}
 
 
-def deduplicate_models(rows):
+def deduplicate_models(rows, facts=None):
     """Collapse live hard-link/junction aliases for display, never mutate records."""
+    facts = facts or FileFacts()
     groups = {}
     for raw in rows:
         row = dict(raw)
-        key = file_identity(row.get("path")) or path_key(row.get("path"))
+        key = file_identity(row.get("path"), facts) or path_key(row.get("path"))
         groups.setdefault(key, []).append(row)
     result = []
     for aliases in groups.values():
         aliases.sort(key=lambda r: (not bool(r.get("legacy_uid")), r.get("rowid_pk") or 0, r.get("path", "")))
         row = dict(aliases[0])
         paths = list(dict.fromkeys(p for a in aliases for p in [a.get("path"), *_object(a.get("alt_paths"), [])]
-                                   if p and alias_compatible(row.get("path"), p)))
+                                   if p and alias_compatible(row.get("path"), p, facts)))
         row["compatibility_paths"] = [p for p in paths if path_key(p) != path_key(row.get("path"))]
         row["alt_paths"] = json.dumps(row["compatibility_paths"], ensure_ascii=False)
         row["alias_rowids"] = [a["rowid_pk"] for a in aliases if a.get("rowid_pk")]
@@ -303,8 +329,9 @@ def deduplicate_models(rows):
     return result
 
 
-def classification_context(rows=(), catalog=None, labels=()):
+def classification_context(rows=(), catalog=None, labels=(), facts=None):
     """Shared model/audit/manual inputs, matched by stable ID, path or live identity."""
+    facts = facts or FileFacts()
     catalog = catalog or {}
     audits = catalog.get("models", [])
     audit_ids = {a["id"]: a for a in audits if isinstance(a, dict) and a.get("id")}
@@ -314,9 +341,9 @@ def classification_context(rows=(), catalog=None, labels=()):
             continue
         canonical = audit.get("canonical_path") or audit.get("runtime_path") or audit.get("old_path")
         for p in (audit.get("canonical_path"), audit.get("runtime_path"), audit.get("old_path")):
-            if p and alias_compatible(canonical, p):
+            if p and alias_compatible(canonical, p, facts):
                 audit_paths[path_key(p)] = audit
-                identity = file_identity(p)
+                identity = file_identity(p, facts)
                 if identity:
                     audit_ids_live[identity] = audit
     manual_paths, manual_ids = {}, {}
@@ -324,34 +351,41 @@ def classification_context(rows=(), catalog=None, labels=()):
         p = raw.get("model_path")
         if p:
             manual_paths[path_key(p)] = raw
-            identity = file_identity(p)
+            identity = file_identity(p, facts)
             if identity:
                 manual_ids[identity] = raw
     paths, identities = {}, {}
-    for model in deduplicate_models(rows):
+    for model in deduplicate_models(rows, facts):
         p = model.get("path")
-        identity = file_identity(p)
+        identity = file_identity(p, facts)
         aliases = [p, *model.get("compatibility_paths", [])]
         audit = audit_ids.get(model.get("legacy_uid"))
-        if audit and not alias_compatible(audit.get("canonical_path") or audit.get("runtime_path") or audit.get("old_path"), p):
+        if audit and not alias_compatible(audit.get("canonical_path") or audit.get("runtime_path") or audit.get("old_path"), p, facts):
             audit = None
         audit = audit or next((audit_paths[path_key(a)] for a in aliases if path_key(a) in audit_paths), None) or audit_ids_live.get(identity) or {}
         # Identity-wide latest label wins even if the primary index path changed.
         manual = manual_ids.get(identity) or next((manual_paths[path_key(a)] for a in aliases if path_key(a) in manual_paths), None) or {}
+        if str(model.get("ext") or os.path.splitext(p)[1]).lower() == ".bin":
+            from . import meta
+            info = facts.stat(p)
+            model["model_evidence"] = meta.bin_model_evidence(
+                p, info.st_size if info else model.get("size"),
+                registered=bool(audit), manual=manual.get("model_role") in MODEL_ROLES and manual.get("model_role") != "Unknown")
         item = {"model": model, "audit": audit, "manual": manual}
         for alias in aliases:
             paths[path_key(alias)] = item
         if identity:
             identities[identity] = item
-    return {"paths": paths, "identities": identities, "audit_paths": audit_paths,
+    return {"facts": facts, "paths": paths, "identities": identities, "audit_paths": audit_paths,
             "audit_identities": audit_ids_live, "manual_paths": manual_paths, "manual_identities": manual_ids}
 
 
 def context_for(context, path, fallback=None):
     context = context or {}
-    identity = file_identity(path)
+    facts = context.get("facts") or FileFacts()
+    identity = file_identity(path, facts)
     item = context.get("paths", {}).get(path_key(path)) or context.get("identities", {}).get(identity)
-    if item and alias_compatible(item["model"].get("path"), path):
+    if item and alias_compatible(item["model"].get("path"), path, facts):
         return item
     return {"model": fallback or {"path": str(path), "filename": os.path.basename(str(path))},
             "audit": context.get("audit_paths", {}).get(path_key(path)) or context.get("audit_identities", {}).get(identity) or {},

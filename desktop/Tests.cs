@@ -41,6 +41,173 @@ namespace AIHub.Desktop
             finally { LocalFree(arguments); }
         }
 
+        private static string CompileUtf8ProbeFixture(string folder, string reportedExecutable)
+        {
+            string source = Path.Combine(folder, "fake-utf8-python-probe.cs");
+            string executable = Path.Combine(folder, "fake-utf8-python-probe.exe");
+            string compiler = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
+            string literal = "\"" + reportedExecutable.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            string code = "using System; using System.Text; internal static class FakeProbe { static void Main() { " +
+                "Console.OutputEncoding = new UTF8Encoding(false); Console.WriteLine(\"3.12.13\"); Console.WriteLine(" + literal + "); } }";
+            File.WriteAllText(source, code, new UTF8Encoding(false));
+            var start = new ProcessStartInfo(compiler, "/nologo /target:exe /out:" + Hub.Quote(executable) + " " + Hub.Quote(source)) {
+                UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using (var process = Process.Start(start))
+            {
+                if (process == null || !process.WaitForExit(10000) || process.ExitCode != 0)
+                    throw new InvalidOperationException("Could not compile the isolated UTF-8 probe fixture.");
+            }
+            return executable;
+        }
+
+        private static byte[] PeHeaderFixture(bool pe32Plus)
+        {
+            byte[] value = new byte[1024];
+            using (var stream = new MemoryStream(value))
+            using (var writer = new BinaryWriter(stream))
+            {
+                writer.Write((ushort)0x5a4d);
+                stream.Position = 60; writer.Write(128);
+                stream.Position = 128; writer.Write(0x00004550);
+                writer.Write((ushort)(pe32Plus ? 0x8664 : 0x14c));
+                writer.Write((ushort)1);
+                stream.Position = 148; writer.Write((ushort)(pe32Plus ? 240 : 224)); writer.Write((ushort)2);
+                writer.Write((ushort)(pe32Plus ? 0x20b : 0x10b));
+                stream.Position = 212; writer.Write(512);
+                stream.Position = 152 + (pe32Plus ? 240 : 224) + 16;
+                writer.Write(512); writer.Write(512);
+            }
+            return value;
+        }
+
+        internal static void PythonPeHeaderTests(string folder)
+        {
+            string path = Path.Combine(folder, "pe-header-fixture.exe");
+            foreach (bool plus in new[] { false, true })
+            {
+                byte[] valid = PeHeaderFixture(plus);
+                File.WriteAllBytes(path, valid);
+                Check(Hub.HasExecutablePeHeaders(path), "basic PE header accepts " + (plus ? "PE32+" : "x86 PE32"));
+                foreach (int length in new[] { 0, 2, 63, 128, 151, 200, 400, 1023 })
+                {
+                    byte[] truncated = new byte[length]; Array.Copy(valid, truncated, length);
+                    File.WriteAllBytes(path, truncated);
+                    Check(!Hub.HasExecutablePeHeaders(path), "truncated PE rejected before launch: " + plus + "/" + length);
+                }
+                // Offset overflows, forged signature, DLL/no-executable flags,
+                // missing optional header, excessive sections and raw data escape.
+                foreach (int field in new[] { 0, 60, 128, 134, 148, 150, 152, 212, 152 + (plus ? 240 : 224) + 20 })
+                {
+                    byte[] corrupt = (byte[])valid.Clone();
+                    uint mutation = field == 150 ? 0x2002U : 0xffffffffU;
+                    Array.Copy(BitConverter.GetBytes(mutation), 0, corrupt, field, 4);
+                    File.WriteAllBytes(path, corrupt);
+                    Check(!Hub.HasExecutablePeHeaders(path), "forged PE field rejected before launch: " + plus + "/" + field);
+                }
+                byte[] nonExecutable = (byte[])valid.Clone();
+                nonExecutable[150] = 0; nonExecutable[151] = 0;
+                File.WriteAllBytes(path, nonExecutable);
+                Check(!Hub.HasExecutablePeHeaders(path), "COFF without executable flag rejected: " + plus);
+            }
+            Check(Hub.HasExecutablePeHeaders(Process.GetCurrentProcess().MainModule.FileName), "real managed EXE header accepted");
+        }
+
+        private static void PythonDiscoveryTests(string folder)
+        {
+            Hub.Root = folder;
+            PythonPeHeaderTests(folder);
+            string validPython = Hub.FindPython();
+            string pathPython = Hub.FindPython(Hub.PathPythonCandidates(Path.GetDirectoryName(validPython)));
+            Check(String.Equals(Path.GetFullPath(pathPython), Path.GetFullPath(validPython), StringComparison.OrdinalIgnoreCase),
+                "PATH-only Python discovery returns a probed interpreter");
+            Check(Hub.ParsePythonProbeResult("3.8.20\r\n" + validPython) == null,
+                "Python probe rejects versions older than 3.9");
+            Check(Hub.ParsePythonProbeResult("3.9.0\r\n" + validPython) != null,
+                "Python probe accepts 3.9 and requires an existing sys.executable");
+            string unicodeDirectory = Path.Combine(folder, "解释器 路径");
+            Directory.CreateDirectory(unicodeDirectory);
+            string unicodeExecutable = Path.Combine(unicodeDirectory, "python.exe");
+            File.WriteAllText(unicodeExecutable, "fixture target");
+            string unicodeLauncher = CompileUtf8ProbeFixture(folder, unicodeExecutable);
+            string unicodeResult = Hub.FindPython(new[] { new Hub.PythonCandidate(unicodeLauncher) });
+            Check(String.Equals(Path.GetFullPath(unicodeResult), Path.GetFullPath(unicodeExecutable), StringComparison.OrdinalIgnoreCase),
+                "UTF-8 probe preserves a Chinese sys.executable path");
+            var launcherEntries = Hub.ParsePythonLauncherOutput(" -V:3.13 * " + validPython + "\r\n");
+            Check(launcherEntries.Count == 1 && String.Equals(Path.GetFullPath(launcherEntries[0]), Path.GetFullPath(validPython), StringComparison.OrdinalIgnoreCase),
+                "py launcher inventory paths are parsed for direct probing");
+            byte[] unicodeLauncherInventory = new UTF8Encoding(false).GetBytes(" -V:3.13 * " + unicodeExecutable + "\r\n");
+            var unicodeLauncherEntries = Hub.ParsePythonLauncherBytes(unicodeLauncherInventory);
+            Check(unicodeLauncherEntries.Count == 1 && String.Equals(Path.GetFullPath(unicodeLauncherEntries[0]), Path.GetFullPath(unicodeExecutable), StringComparison.OrdinalIgnoreCase),
+                "UTF-8 py inventory preserves Chinese installation paths");
+            string launcher = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "py.exe");
+            if (File.Exists(launcher))
+            {
+                string fromLauncher = Hub.FindPython(Hub.PathPythonCandidates(Path.GetDirectoryName(launcher)));
+                Check(!String.IsNullOrWhiteSpace(fromLauncher), "installed Python can be discovered from py.exe -0p");
+            }
+            else Console.WriteLine("SKIP py.exe inventory integration probe (launcher unavailable)");
+
+            string runtimeDirectory = Path.Combine(folder, "runtime");
+            Directory.CreateDirectory(runtimeDirectory);
+            string invalidRuntime = Path.Combine(runtimeDirectory, "python.exe");
+            File.WriteAllText(invalidRuntime, "not a Windows executable");
+            string selected = Hub.FindPython(new[] {
+                new Hub.PythonCandidate(invalidRuntime),
+                new Hub.PythonCandidate(validPython)
+            });
+            Check(String.Equals(Path.GetFullPath(selected), Path.GetFullPath(validPython), StringComparison.OrdinalIgnoreCase),
+                "invalid portable runtime falls back to a probed system interpreter");
+
+            string timeoutMarker = Path.Combine(folder, "python-probe-timeout.txt");
+            string markerLiteral = "r\"" + timeoutMarker.Replace("\"", "\\\"") + "\"";
+            string slowProbe = "import os,time; open(" + markerLiteral + ",'w').write(str(os.getpid())); time.sleep(30)";
+            var timer = Stopwatch.StartNew();
+            bool timedOut = false;
+            try
+            {
+                Hub.FindPython(new[] { new Hub.PythonCandidate(validPython, "-c " + Hub.Quote(slowProbe)) });
+            }
+            catch (FileNotFoundException) { timedOut = true; }
+            Check(timedOut && timer.ElapsedMilliseconds < 5000, "stalled interpreter probe has a bounded timeout");
+            bool probeExited = false;
+            if (File.Exists(timeoutMarker))
+            {
+                int pid;
+                if (Int32.TryParse(File.ReadAllText(timeoutMarker), out pid))
+                {
+                    try
+                    {
+                        using (var process = Process.GetProcessById(pid))
+                            probeExited = process.HasExited || process.WaitForExit(1000);
+                    }
+                    catch (ArgumentException) { probeExited = true; }
+                }
+            }
+            Check(probeExited, "timed-out probe terminates only its own child process");
+
+            string pathDirectory = Path.Combine(folder, "python-path-fixture");
+            string storeDirectory = Path.Combine(folder, "WindowsApps");
+            Directory.CreateDirectory(pathDirectory);
+            Directory.CreateDirectory(storeDirectory);
+            string pathCandidate = Path.Combine(pathDirectory, "python.exe");
+            string pathLauncher = Path.Combine(pathDirectory, "py.exe");
+            string storeAlias = Path.Combine(storeDirectory, "python.exe");
+            File.WriteAllText(pathCandidate, "fixture");
+            File.WriteAllText(pathLauncher, "fixture");
+            File.WriteAllText(storeAlias, "fixture");
+            bool foundPathPython = false;
+            bool foundStoreAlias = false;
+            foreach (Hub.PythonCandidate candidate in Hub.PythonCandidates(pathDirectory + Path.PathSeparator + storeDirectory))
+            {
+                if (String.Equals(Path.GetFullPath(candidate.Executable), Path.GetFullPath(pathCandidate), StringComparison.OrdinalIgnoreCase)) foundPathPython = true;
+                if (String.Equals(Path.GetFullPath(candidate.Executable), Path.GetFullPath(storeAlias), StringComparison.OrdinalIgnoreCase)) foundStoreAlias = true;
+            }
+            Check(foundPathPython, "PATH python.exe candidate is discovered");
+            Check(!foundStoreAlias, "Windows Store execution alias is excluded");
+        }
+
         private static void HealthResponse(string body, bool expected)
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -74,15 +241,16 @@ namespace AIHub.Desktop
             Hub.Url = "http://127.0.0.1:" + Hub.Port + "/";
             File.Copy(Path.Combine(sourceRoot, "launcher.pyw"), Path.Combine(folder, "launcher.pyw"), true);
             File.WriteAllText(Path.Combine(folder, "server.py"),
-                "import ctypes,json,sys,threading\nfrom http.server import BaseHTTPRequestHandler,HTTPServer\n" +
+                "import ctypes,json,os,sys,threading\nfrom http.server import BaseHTTPRequestHandler,HTTPServer\n" +
                 "from pathlib import Path\n" +
                 "Path('data/console.txt').write_text(str(ctypes.windll.kernel32.GetConsoleWindow()))\n" +
                 "class Handler(BaseHTTPRequestHandler):\n" +
                 " def do_GET(self):\n" +
-                "  body=b'{\"app\":\"ai-hub\"}'\n" +
+                "  body=json.dumps({'app':'ai-hub','control_protocol':'ai-hub-local-control-v1','service_instance_id':'fixture-instance','install_root':str(Path.cwd().resolve())}).encode('utf-8')\n" +
                 "  self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)\n" +
                 " def log_message(self,*args): pass\n" +
                 "server=HTTPServer(('127.0.0.1',int(sys.argv[sys.argv.index('--port')+1])),Handler)\n" +
+                "Path('data/server.pid.json').write_text(json.dumps({'pid':os.getpid(),'source':'fixture-server'}))\n" +
                 "threading.Timer(4,server.shutdown).start()\nserver.serve_forever()\nserver.server_close()\n");
             CopyDirectory(Path.Combine(sourceRoot, "aihub"), Path.Combine(folder, "aihub"));
             Directory.CreateDirectory(Path.Combine(folder, "tools"));
@@ -333,6 +501,97 @@ namespace AIHub.Desktop
             finally { listener.Stop(); }
         }
 
+        private static void UpdateInstallGuardTests(string folder)
+        {
+            Check(!AppUpdateInstallGuard.CanInstall(true), "dirty draft hard-blocks update installation");
+            Check(!AppUpdateInstallGuard.CanInstall(null), "unknown draft state hard-blocks update installation");
+            Check(AppUpdateInstallGuard.CanInstall(false), "saved draft permits update installation");
+            Task.Run(async () =>
+            {
+                int attempts = 0;
+                var signal = new AppUpdateUiReady(() => {
+                    attempts++;
+                    if (attempts == 1) throw new IOException("fixture unavailable");
+                    return Task.FromResult(0);
+                });
+                await signal.NotifyAsync();
+                await signal.NotifyAsync();
+                await signal.NotifyAsync();
+                Check(attempts == 2, "UI-ready failure retries and successful signal is sent once");
+                var release = new TaskCompletionSource<int>();
+                int pendingAttempts = 0;
+                var pending = new AppUpdateUiReady(() => { pendingAttempts++; return release.Task; });
+                Task first = pending.NotifyAsync();
+                await pending.NotifyAsync();
+                Check(pendingAttempts == 1, "concurrent navigation does not duplicate UI-ready signal");
+                release.SetResult(0);
+                await first;
+                await pending.NotifyAsync();
+                Check(pendingAttempts == 1, "completed UI-ready signal remains idempotent");
+            }).GetAwaiter().GetResult();
+
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Hub.Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            Hub.Cache = folder;
+            Hub.Root = Hub.NormalizeRoot(folder);
+            var serializer = new JavaScriptSerializer();
+            File.WriteAllText(Path.Combine(folder, "server-control.json"), serializer.Serialize(Control(Hub.Root, Hub.Port)));
+            var response = Task.Run(() =>
+            {
+                bool authenticated = false;
+                for (int i = 0; i < 2; i++)
+                {
+                    using (var client = listener.AcceptTcpClient())
+                    using (var stream = client.GetStream())
+                    {
+                        client.ReceiveTimeout = 4000;
+                        var headerText = new StringBuilder();
+                        while (!headerText.ToString().EndsWith("\r\n\r\n", StringComparison.Ordinal))
+                        {
+                            int next = stream.ReadByte();
+                            if (next < 0 || headerText.Length > 8192) throw new IOException("Invalid UI-ready fixture request");
+                            headerText.Append((char)next);
+                        }
+                        string[] lines = headerText.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+                        int length = 0;
+                        bool token = false;
+                        foreach (string line in lines)
+                        {
+                            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) length = Int32.Parse(line.Substring(15).Trim());
+                            if (line == "X-AIHub-Control-Token: " + new string('a', 43)) token = true;
+                        }
+                        if (i == 1)
+                        {
+                            var content = new byte[length];
+                            int count = 0;
+                            while (count < content.Length)
+                            {
+                                int read = stream.Read(content, count, content.Length - count);
+                                if (read == 0) throw new IOException("Incomplete UI-ready fixture request");
+                                count += read;
+                            }
+                            var body = serializer.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(content));
+                            authenticated = token && lines[0].StartsWith("POST /api/desktop/update/ui_ready ") && body.Count == 2 &&
+                                (string)body["instance_id"] == "fixture-instance" && (string)body["install_root"] == Hub.Root;
+                        }
+                        string result = i == 0 ? serializer.Serialize(ControlHealth(Hub.Root)) : "{\"status\":\"ready\"}";
+                        byte[] bytes = Encoding.UTF8.GetBytes(result);
+                        byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
+                        stream.Write(header, 0, header.Length);
+                        stream.Write(bytes, 0, bytes.Length);
+                    }
+                }
+                return authenticated;
+            });
+            try
+            {
+                AppUpdateApi.UiReady();
+                Check(response.GetAwaiter().GetResult(), "UI-ready authenticates exact instance and sends identity fields only");
+            }
+            finally { listener.Stop(); }
+        }
+
         private static void LifecycleTests(string folder)
         {
             Hub.Root = Hub.NormalizeRoot(folder);
@@ -394,6 +653,9 @@ namespace AIHub.Desktop
 
         private static void UpdateDialogTests(string renderOutput)
         {
+            Check(AppUpdateApi.ErrorMessage(new Dictionary<string, object> { { "error", "安装程序文件清单格式不兼容，不能安全覆盖。" } }, 409).Contains("清单格式"), "legacy API error field retains the actual installation failure");
+            Check(!AppUpdateApi.ErrorMessage(null, 409).Contains("正在进行"), "unknown conflict does not invent a running update");
+            Check(AppUpdateApi.ErrorMessage(new Dictionary<string, object> { { "safe_message", "安全提示" }, { "error", "其他提示" } }, 400) == "安全提示", "safe message takes precedence");
             string origin = "http://127.0.0.1:8765/";
             Check(Hub.IsTrustedUpdateMessageSource(origin + "#/overview", origin + "#/overview", origin), "fixed update request accepts current local SPA document");
             Check(!Hub.IsTrustedUpdateMessageSource(origin + "#/overview", origin + "#/models", origin), "fixed update request rejects stale document source");
@@ -419,6 +681,10 @@ namespace AIHub.Desktop
                 status["state"] = "ready";
                 render.Invoke(dialog, null);
                 Check(primary.Enabled && recheck.Enabled, "ready candidate retains install and secondary recheck actions");
+                status["operation_active"] = true;
+                render.Invoke(dialog, null);
+                Check(!primary.Enabled && !recheck.Enabled, "ready snapshot with an active worker cannot start installation or recheck");
+                status["operation_active"] = false;
                 status["state"] = "checking";
                 render.Invoke(dialog, null);
                 Check(!primary.Enabled && !recheck.Enabled, "busy check prevents concurrent manual actions");
@@ -428,8 +694,8 @@ namespace AIHub.Desktop
             using (var dialog = new AppUpdateDialog(true))
             {
                 var status = new Dictionary<string, object> {
-                    { "state", "ready" }, { "channel", "candidate" }, { "current_version", "2.12.0" },
-                    { "latest_version", "2.12.0" }, { "notes", "更新已下载并通过完整性验证。\r\n安装前请保存正在编辑的内容。" },
+                    { "state", "ready" }, { "channel", "candidate" }, { "current_version", "2.13.2" },
+                    { "latest_version", "2.13.3" }, { "notes", "修复直接解压安装后的升级兼容性、错误提示与本地服务身份识别。\r\n安装前请保存正在编辑的内容。" },
                     { "bytes", 1835000L }, { "downloaded_bytes", 1835000L }, { "auto_check", true }, { "auto_install", false }
                 };
                 typeof(AppUpdateDialog).GetField("status", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(dialog, status);
@@ -446,6 +712,15 @@ namespace AIHub.Desktop
                     Directory.CreateDirectory(Path.GetDirectoryName(renderOutput));
                     bitmap.Save(renderOutput, System.Drawing.Imaging.ImageFormat.Png);
                 }
+                typeof(AppUpdateDialog).GetMethod("ShowInlineError", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(dialog,
+                    new object[] { "安装未完成", "本机程序文件与安装清单摘要不匹配，已停止更新。请保留现有目录，核对本机修改后重试。" });
+                dialog.PerformLayout();
+                using (var bitmap = new Bitmap(dialog.Width, dialog.Height))
+                {
+                    dialog.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
+                    bitmap.Save(Path.Combine(Path.GetDirectoryName(renderOutput), Path.GetFileNameWithoutExtension(renderOutput) + "-error.png"),
+                        System.Drawing.Imaging.ImageFormat.Png);
+                }
                 dialog.Hide();
             }
             Console.WriteLine("Update dialog off-screen preview: " + renderOutput);
@@ -457,6 +732,12 @@ namespace AIHub.Desktop
             Directory.CreateDirectory(folder);
             try
             {
+                if (args.Length == 1 && args[0] == "--update-install-guards-only")
+                {
+                    UpdateInstallGuardTests(folder);
+                    Console.WriteLine("Update install guard tests passed: " + passed);
+                    return 0;
+                }
                 Check(Hub.NormalizeRoot(args[0]) == Hub.NormalizeRoot(Path.Combine(args[0], ".")), "app root normalization retains physical directory");
                 string aliasArgument = null;
                 string candidateExe = null;
@@ -491,10 +772,20 @@ namespace AIHub.Desktop
                 Directory.CreateDirectory(Path.Combine(folder, "frontend"));
                 File.WriteAllText(Path.Combine(folder, "frontend", "index.html"), "");
                 Check(Hub.IsAppRoot(folder), "app folder recognized");
-                HealthResponse("{\"app\":\"ai-hub\"}", true);
+                Hub.Root = Hub.NormalizeRoot(folder);
+                var ownHealth = new Dictionary<string, object> {
+                    { "app", "ai-hub" }, { "control_protocol", Hub.ControlProtocol },
+                    { "service_instance_id", "fixture-instance" }, { "install_root", folder }
+                };
+                HealthResponse(new JavaScriptSerializer().Serialize(ownHealth), true);
+                ownHealth["install_root"] = Path.Combine(folder, "another-installation");
+                HealthResponse(new JavaScriptSerializer().Serialize(ownHealth), false);
+                HealthResponse("{\"app\":\"ai-hub\"}", false);
                 HealthResponse("{\"app\":\"other\"}", false);
                 HealthResponse("not-json", false);
+                PythonDiscoveryTests(folder);
                 LifecycleTests(folder);
+                UpdateInstallGuardTests(folder);
                 if (!String.IsNullOrEmpty(candidateExe))
                 {
                     RunCandidateUnderUpdateMarker(args[0], candidateExe, true, false);
@@ -506,6 +797,10 @@ namespace AIHub.Desktop
                 for (int i = 1; i + 1 < args.Length; i++)
                     if (args[i] == "--update-render-output") updateRender = args[i + 1];
                 UpdateDialogTests(updateRender);
+                string executionRender = null;
+                for (int i = 1; i + 1 < args.Length; i++)
+                    if (args[i] == "--execution-render-output") executionRender = args[i + 1];
+                ExecutionAccessTests.Run(folder, executionRender);
                 ColdStart(folder, args[0]);
                 Console.WriteLine("Desktop tests passed: " + passed);
                 return 0;

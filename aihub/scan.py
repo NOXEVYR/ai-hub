@@ -24,6 +24,65 @@ TRAINING_STATE_RE = re.compile(
     r"optimizer_states|step_|snr_|train_state)", re.I)
 
 
+class ScanSourceError(RuntimeError):
+    """A configured scan source cannot be read completely right now."""
+
+
+def minimal_roots(roots):
+    """Return the smallest lexical cover after callers validate every source."""
+    unique = {config._key(path): path for path in roots}
+    selected = []
+    for path in sorted(unique.values(), key=lambda p: (len(p), config._key(p))):
+        if not any(config._within(path, parent) for parent in selected):
+            selected.append(path)
+    return selected
+
+
+def source_scope(cfg, kind='scan', column='path'):
+    """Shared managed-source boundary for views and model actions."""
+    if cfg.get('workspace_managed') is not True:
+        return '1=1', []
+    terms, args, candidates = [], [], set()
+    root = cfg.get('ai_root') or ''
+    for source in cfg.get(kind + '_roots') or []:
+        if not config.scan_root_allowed(source, cfg) or not config._within(source, root):
+            continue
+        canonical = os.path.realpath(source).rstrip('\\/')
+        candidates.add(canonical)
+        if kind == 'scan':
+            for alias in cfg.get('aliases') or {}:
+                if not os.path.isdir(alias):
+                    continue
+                target = os.path.realpath(alias)
+                if config._within(target, canonical):
+                    candidates.add(os.path.abspath(alias).rstrip('\\/'))
+                elif config._within(canonical, target):
+                    candidates.add(os.path.join(alias, os.path.relpath(canonical, target)).rstrip('\\/'))
+    for canonical in sorted(candidates):
+        prefix = canonical + os.sep
+        terms.append(f'({column}=? COLLATE NOCASE OR substr({column},1,?)=? COLLATE NOCASE)')
+        args.extend([canonical, len(prefix), prefix])
+    return '(' + ' OR '.join(terms) + ')' if terms else '0=1', args
+
+
+def validate_scan_roots(cfg):
+    """Preflight configured sources before a scan can replace the old index."""
+    roots = cfg.get("scan_roots", [cfg.get("ai_root")]) or []
+    resolved = []
+    for root in roots:
+        if not config.scan_root_allowed(root, cfg):
+            raise ScanSourceError(
+                f"扫描来源当前不可用或已被排除：{root}。请恢复该来源，或在来源设置中明确移除。")
+        path = os.path.realpath(root)
+        try:
+            with os.scandir(path):
+                pass
+        except OSError as exc:
+            raise ScanSourceError(f"无法读取扫描来源 {root}：{exc}") from exc
+        resolved.append(path)
+    return minimal_roots(resolved)
+
+
 def _strip_extended(p: str) -> str:
     if p.startswith("\\\\?\\UNC\\"):
         return "\\\\" + p[8:]
@@ -57,7 +116,7 @@ def scan_all(db, cfg, progress_cb=None):
 
 def _scan_all(db, cfg, progress_cb=None):
     """完整扫描：返回 {file_count, dir_count, model_groups}，并把 files/dirs 写入数据库。"""
-    roots = cfg.get("scan_roots", [cfg.get("ai_root")]) or []
+    roots = validate_scan_roots(cfg)
     ignore = {name.casefold() for name in (cfg.get("ignore_dirs") or [])}
     dirs_agg = {}          # path -> [size, file_count, dir_count]
     dirs_rows_ignored = [] # 被忽略目录的占位行
@@ -67,27 +126,37 @@ def _scan_all(db, cfg, progress_cb=None):
     seen_inodes = {}       # (dev,ino) -> size，仅模型文件（DirEntry.stat 无 st_ino）
     model_path_bytes = [0]  # 模型文件按路径累加的体积（含硬链接重复）
     model_unique_bytes = [0]  # 模型文件按唯一 inode 的体积
+    manual_roles = {classification.path_key(r['model_path']): r['model_role']
+                    for r in db.query('SELECT model_path, model_role FROM model_labels')
+                    if r['model_role'] in classification.MODEL_ROLES and r['model_role'] != 'Unknown'}
+    manual_identities = {identity: role for path, role in manual_roles.items()
+                         if (identity := classification.file_identity(path))}
 
     def report(msg):
         if progress_cb:
             progress_cb(msg)
 
+    def excluded(path):
+        try:
+            return config.scan_excluded(path, cfg, strict_io=True)
+        except OSError as exc:
+            raise ScanSourceError(f"读取扫描路径失败 {path}：{exc}") from exc
+
     def visit(dirpath, depth):
-        if config.scan_excluded(dirpath, cfg):
+        if excluded(dirpath):
             return
         try:
             entries = list(os.scandir(dirpath))
-        except OSError:
-            dirs_agg[dirpath] = [0, 0, 0]
-            return
+        except OSError as exc:
+            raise ScanSourceError(f"读取扫描目录失败 {dirpath}：{exc}") from exc
         size_acc, f_acc, d_acc = 0, 0, 0
         parent_name = os.path.basename(dirpath)
         for e in entries:
             try:
                 st = e.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if e.is_symlink() or _is_reparse_stat(st) or config.scan_excluded(e.path, cfg):
+            except OSError as exc:
+                raise ScanSourceError(f"读取扫描条目失败 {e.path}：{exc}") from exc
+            if e.is_symlink() or _is_reparse_stat(st) or excluded(e.path):
                 continue
             if e.is_dir(follow_symlinks=False):
                 if _is_reparse_stat(st):
@@ -106,7 +175,11 @@ def _scan_all(db, cfg, progress_cb=None):
             else:
                 path = _strip_extended(e.path)
                 ext = os.path.splitext(e.name)[1].lower()
-                category, mtype = meta.classify_file(ext, parent_name)
+                category, mtype = meta.classify_file(ext, parent_name, path, st.st_size)
+                if ext == '.bin' and category != 'model' and manual_roles:
+                    role = manual_roles.get(classification.path_key(path)) or manual_identities.get(classification.file_identity(path))
+                    if role:
+                        category, mtype = 'model', role
                 if category == "model":
                     mtype = mtype or meta.model_type(path) or "Unknown"
                 if category == "model" and TRAINING_STATE_RE.match(e.name):
@@ -123,8 +196,8 @@ def _scan_all(db, cfg, progress_cb=None):
                         g = groups.setdefault(ino_key, {"paths": [], "size": st.st_size,
                                                         "mtime": st.st_mtime, "ext": ext})
                         g["paths"].append(path)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        raise ScanSourceError(f"读取模型文件身份失败 {e.path}：{exc}") from exc
                 files_rows.append((path, dirpath, e.name, ext, st.st_size, st.st_mtime,
                                    category, mtype, ino_key))
                 size_acc += st.st_size
@@ -137,8 +210,7 @@ def _scan_all(db, cfg, progress_cb=None):
     report("开始扫描目录树…")
     t0 = time.time()
     for r in roots:
-        if config.scan_root_allowed(r, cfg):
-            visit(os.path.realpath(r), 0)
+        visit(r, 0)
 
     report(f"目录树完成：{count[0]} 文件 / {len(dirs_agg)} 目录（{time.time()-t0:.0f}s），写入数据库…")
     dirs_rows = []
@@ -148,7 +220,7 @@ def _scan_all(db, cfg, progress_cb=None):
         dirs_rows.append((p, parent, os.path.basename(p) or p, depth, s, f, d, 0))
     dirs_rows.extend(dirs_rows_ignored)
     db.replace_scan_tables(dirs_rows, files_rows)
-    root_paths = [os.path.realpath(r) for r in roots if config.scan_root_allowed(r, cfg)]
+    root_paths = roots
     dirs_agg_total = sum(dirs_agg.get(rp, [0, 0, 0])[0] for rp in root_paths)
     unique_size = dirs_agg_total - (model_path_bytes[0] - model_unique_bytes[0])
     db.set_meta("unique_size", str(unique_size))

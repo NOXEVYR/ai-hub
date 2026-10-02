@@ -101,7 +101,7 @@ class MCPTests(unittest.TestCase):
         out, err = self.run_stdio([*initialization(),
             request(2, 'tools/call', {'name': 'aihub_task_claim', 'arguments': {'task_id': '中文任务'}}),
             request(3, 'tools/call', {'name': 'aihub_artifact_write', 'arguments': {
-                'task_id': '中文任务', 'lease_token': 'secret-lease', 'kind': 'report',
+                'task_id': '中文任务', 'lease_token': 'secret-lease', 'kind': 'report', 'category': 'report',
                 'title': '验收报告', 'filename': '报告.md', 'content': '第一行\n第二行'}})])
         self.assertFalse(out[1]['result']['isError'])
         self.assertEqual(json.loads(out[1]['result']['content'][0]['text'])['lease_token'], 'secret-lease')
@@ -112,6 +112,40 @@ class MCPTests(unittest.TestCase):
         self.assertTrue(all(data['client_id'] == 'test-codex' for _, data in self.server.calls))
         self.assertNotIn('secret-lease', err)
         self.assertNotIn('secret-lease', json.dumps(out[0]))
+
+    def test_submission_schema_and_missing_category_transport_guard(self):
+        out, err = self.run_stdio([*initialization(),
+            request(2, 'tools/call', {'name': 'aihub_submission_schema'}),
+            request(3, 'tools/call', {'name': 'aihub_artifact_write', 'arguments': {
+                'task_id': 'task', 'lease_token': 'private', 'kind': 'report',
+                'title': 'Missing category', 'filename': 'report.md', 'content': 'text'}})])
+        self.assertFalse(out[1]['result']['isError'])
+        self.assertEqual(out[2]['error']['code'], -32602)
+        self.assertEqual([path.rsplit('/', 1)[-1] for path, _ in self.server.calls],
+                         ['client_heartbeat', 'submission_schema'])
+        self.assertEqual(err, '')
+
+    def test_optional_chinese_client_name_persists_across_stdio_heartbeats(self):
+        out, err = self.run_stdio([*initialization(),
+            request(2, 'tools/call', {'name': 'aihub_client_heartbeat'}),
+            request(3, 'tools/call', {'name': 'aihub_client_heartbeat'})],
+            extra=('--client-name', '更新修复代理'))
+        self.assertTrue(all(not packet['result']['isError'] for packet in out[1:]))
+        self.assertGreaterEqual(len(self.server.calls), 2)
+        self.assertTrue(all(data['name'] == '更新修复代理' and data['client_id'] == 'test-codex'
+                            and data['tool'] == 'codex' for _, data in self.server.calls))
+        self.assertEqual(err, '')
+
+    def test_default_client_name_remains_stable_id(self):
+        self.run_stdio([*initialization(), request(2, 'tools/call', {'name': 'aihub_client_heartbeat'})])
+        self.assertTrue(self.server.calls)
+        self.assertTrue(all(data['name'] == data['client_id'] == 'test-codex' for _, data in self.server.calls))
+
+    def test_invalid_client_display_names_do_not_contact_server(self):
+        for value in ('', '   ', 'a' * 121, '代理\n第二行', '代理\x00', True):
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                Bridge(self.server.server_port, 'test-codex', 'codex', value)
+        self.assertEqual(self.server.calls, [])
 
     def test_forbidden_and_impersonating_arguments_never_reach_http(self):
         calls = [request(i + 2, 'tools/call', {'name': 'aihub_' + action, 'arguments': {}})
@@ -213,7 +247,7 @@ class MCPTests(unittest.TestCase):
             request(4, 'tools/call', {'name': 'aihub_task_list', 'arguments': {'target_tool': 'studio-agent_2'}}),
             request(5, 'tools/call', {'name': 'aihub_capability_list', 'arguments': {'tool': 'renderer-7'}})],
             extra=('--tool', 'studio-agent_2'))
-        self.assertEqual(len(out[1]['result']['tools']), 17)
+        self.assertEqual(len(out[1]['result']['tools']), len(BY_NAME))
         self.assertTrue(all(not item['result']['isError'] for item in out[2:]))
         self.assertEqual([path.rsplit('/', 1)[-1] for path, _ in self.server.calls],
                          ['client_heartbeat', 'task_list', 'capability_list'])
@@ -305,3 +339,13 @@ class MCPTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RetentionPreviewSchemaTests(unittest.TestCase):
+    def test_preview_offset_is_a_bounded_integer(self):
+        schema = BY_NAME['aihub_retention_preview']['inputSchema']
+        validate(schema, {'offset': 1000})
+        validate(schema, {})
+        for value in (-1, True, '1000', 1.5, 2147483648):
+            with self.subTest(offset=value), self.assertRaises(RPCError):
+                validate(schema, {'offset': value})

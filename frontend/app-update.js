@@ -5,10 +5,30 @@
 })(globalThis, () => {
   'use strict';
   function createDraftGuard() {
-    const edited = new Set();
+    const edited = new Map();
+    let revision = 0;
+    const key = control => control?.dataset?.appDraftKey || control?.closest?.('[data-app-draft-scope]')?.dataset?.appDraftScope || control;
     return {
-      edit: control => edited.add(control),
-      saved: controls => { for (const control of controls) edited.delete(control); },
+      edit: control => edited.set(key(control), ++revision),
+      snapshot: controls => new Map(Array.from(controls, control => [key(control), edited.get(key(control))])),
+      saved: (controls, snapshot) => {
+        for (const control of controls) {
+          const id = key(control);
+          if (!snapshot || (snapshot.has(id) && snapshot.get(id) === edited.get(id))) edited.delete(id);
+        }
+      },
+      savedSnapshot: snapshot => {
+        for (const [id, version] of snapshot) {
+          if (edited.get(id) === version) edited.delete(id);
+        }
+      },
+      changed: snapshot => [...snapshot].some(([id, version]) => edited.get(id) !== version),
+      rekey: (before, after) => {
+        if (before && before !== after && edited.has(before)) {
+          edited.set(after, Math.max(edited.get(before), edited.get(after) || 0));
+          edited.delete(before);
+        }
+      },
       dirty: () => edited.size > 0,
     };
   }
@@ -22,13 +42,41 @@
   function mount(win) {
     const doc = win.document, guard = createDraftGuard();
     win.aiHubHasUnsavedChanges = () => guard.dirty();
-    win.AIHubAppUpdate = {saved: container => guard.saved(container.querySelectorAll('input,textarea,select,[contenteditable]'))};
+    const selector = 'input,textarea,select,[contenteditable],[data-app-draft-key]';
+    const controls = container => [
+      ...(container?.matches?.(selector) ? [container] : []),
+      ...(container?.querySelectorAll?.(selector) || []),
+    ];
+    win.AIHubAppUpdate = {
+      // A scope stores only its key and edit revision, never editor values or secrets.
+      bind: (container, id, {transfer=false}={}) => {
+        const control = {dataset:{appDraftKey:id}};
+        if (transfer) guard.rekey(container?.dataset?.appDraftScope, id);
+        if (container?.dataset) container.dataset.appDraftScope = id;
+        return {
+          snapshot: () => guard.snapshot([control]),
+          saved: snapshot => guard.saved([control], snapshot),
+          changed: snapshot => guard.changed(snapshot),
+          edit: () => guard.edit(control),
+          discard: () => guard.saved([control]),
+        };
+      },
+      edit: control => guard.edit(control),
+      edited: control => guard.edit(control),
+      snapshotControls: list => guard.snapshot(list),
+      savedControls: snapshot => guard.savedSnapshot(snapshot),
+      snapshot: container => guard.snapshot(controls(container)),
+      saved: (container, snapshot) => guard.saved(controls(container), snapshot),
+    };
     // Keep edits from detached pages: navigation can retain an in-memory draft.
-    // This deliberately errs on the side of a save confirmation in the native dialog.
+    // Installation stays blocked until the corresponding draft is saved.
     const record = event => {
       const el = event.target;
       if (!el?.matches?.('input,textarea,select,[contenteditable="true"]')) return;
       if (el.id === 'global-search' || el.type === 'search' || el.closest('[data-app-update]')) return;
+      // Filters and navigation controls have no save action. Only explicitly
+      // marked editors participate in the install guard.
+      if (!el.dataset?.appDraftKey && !el.closest('[data-app-draft-scope]')) return;
       guard.edit(el);
     };
     doc.addEventListener('input', record, true);

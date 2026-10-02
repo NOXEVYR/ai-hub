@@ -4,6 +4,7 @@
   else root.AIHubOrganizer = factory();
 })(globalThis, () => {
   'use strict';
+  const bindDraft = (container, key, transfer=false) => globalThis.AIHubAppUpdate?.bind(container, key, {transfer}) || {snapshot(){},saved(){},changed(){return false;},edit(){},discard(){}};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const count = value => Math.max(0, Number(value) || 0).toLocaleString('zh-CN');
   const size = value => {
@@ -54,6 +55,7 @@
       on_startup: Boolean(el.querySelector('#organizer-startup')?.checked),
       category: el.querySelector('#organizer-category')?.value || '',
       page: Number(el.dataset.organizerPage) || 1,
+      ...(el._organizerDraftRoot===undefined?{}:{draftOwner:el._organizerDraftRoot}),
     } : {};
   }
 
@@ -80,7 +82,7 @@
         el.innerHTML = heading('安全区整理', '使用这台电脑的目录，建立可撤销的分类入口。', 'WORKSPACE ORGANIZER') + `
           <section class="organizer-hero"><div class="organizer-hero-icon">${icon('shield', 28)}</div><div><h3>文件留在原处，资产按用途归类。</h3><p>在安全区内生成 <code>00_AIHub_Library</code>。图片、视频、音频、模型与工作流按文件和元数据分类；无法确认的用途会标明待确认。</p></div><span class="badge ${ready ? 'b-green' : 'b-yellow'}">${busy ? '后台任务运行中' : ready ? '安全区已就绪' : workspace.available ? '等待启用整理' : workspace.configured ? '目录不可访问' : '等待设置'}</span></section>
           <div class="organizer-layout"><section class="panel organizer-setup"><div class="panel-head"><h3>${icon('folder', 17)} 本机安全区</h3><span class="caption-note">01 / SETUP</span></div><div class="body">
-            <form id="organizer-form"><label class="organizer-field" for="organizer-root">允许整理的文件夹<input class="inp" id="organizer-root" name="root" required autocomplete="off" spellcheck="false" value="${esc(root)}" placeholder="例如：F:\\AI 或 D:\\CreativeAssets" ${busy ? 'disabled' : ''}></label><p class="caption-note">只处理你指定的文件夹内部，不要求与其他电脑使用相同盘符。请选择专门存放 AI 资产的目录。</p>
+            <form id="organizer-form" data-app-draft-scope="organizer-form"><label class="organizer-field" for="organizer-root">允许整理的文件夹<input class="inp" id="organizer-root" name="root" required autocomplete="off" spellcheck="false" value="${esc(root)}" placeholder="例如：F:\\AI 或 D:\\CreativeAssets" ${busy ? 'disabled' : ''}></label><p class="caption-note">只处理你指定的文件夹内部，不要求与其他电脑使用相同盘符。请选择专门存放 AI 资产的目录。</p>
             ${!workspace.available && workspace.message ? `<p class="organizer-notice" role="status">${esc(workspace.message)}</p>` : ''}
             ${workspace.configured && workspace.available && status.enabled !== true ? '<p class="organizer-notice" role="status">先保存本机安全区以启用整理。已有资产目录可直接确认使用。</p>' : ''}
             <label class="organizer-check"><input type="checkbox" id="organizer-create" ${restored?.create ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>目录不存在时创建它<small>初始化所需目录；已有文件保持原样。</small></span></label>
@@ -94,6 +96,8 @@
             <div class="organizer-table-tools"><label for="organizer-category">预览分类 <select id="organizer-category"><option value="">全部分类</option>${[...new Set((plan.items || []).slice(0,PREVIEW_LIMIT).map(item => item.category))].map(category => `<option value="${esc(category)}">${esc(categoryLabel(category))}</option>`).join('')}</select></label><span id="organizer-preview-count" class="caption-note"></span></div><div class="table-wrap"><table class="tbl organizer-plan-table"><thead><tr><th>原文件 → 分类入口</th><th>分类与依据</th><th>逻辑大小</th></tr></thead><tbody id="organizer-plan-rows"></tbody></table></div><div id="organizer-plan-empty"></div><div class="organizer-plan-footer"><div class="organizer-pagination"><button class="btn small" id="organizer-prev" aria-label="上一页分类预览">←</button><span id="organizer-page-number"></span><button class="btn small" id="organizer-next" aria-label="下一页分类预览">→</button></div><button class="btn primary" id="organizer-apply" ${busy || virtual || !Number(summary.planned) ? 'disabled' : ''}>${icon('folder',15)} ${virtual?'现有库仅提供分类视图':'建立 '+count(summary.planned)+' 个分类入口'}</button></div>` : `<div class="organizer-empty">${icon('folder', 28)}<h4>${ready ? '先看看文件会如何归类' : '先设置这台电脑的安全区'}</h4><p>${busy ? '后台任务完成后将更新预览。' : ready ? '扫描预览只读取文件信息。确认后再建立分类入口。' : '完成上方设置后，即可扫描文件并查看分类依据。'}</p></div>`}
           </section><section class="panel organizer-history"><div class="panel-head"><h3>${icon('clock',17)} 整理记录</h3><span class="caption-note">03 / HISTORY</span></div>${renderRuns(status.runs || [], busy)}</section>`;
 
+        el._organizerDraftRoot=restored?.draftOwner??status.root??'';
+        const draft=bindDraft($('#organizer-form'),'organizer:'+el._organizerDraftRoot);
         const start = async (path, body, message) => {
           $$('button').forEach(button => { button.disabled = true; });
           try {
@@ -110,11 +114,12 @@
           event.preventDefault();
           const body = {root: $('#organizer-root').value.trim(), create: $('#organizer-create').checked, on_startup: $('#organizer-startup').checked};
           if (!body.root) { $('#organizer-error').textContent = '请选择或填写一个资产文件夹。'; $('#organizer-root').focus(); return; }
-          const button = $('#organizer-save'); button.disabled = true; $('#organizer-error').textContent = '';
+          const submitted=draft.snapshot();const button = $('#organizer-save'); button.disabled = true; $('#organizer-error').textContent = '';
           try {
             await api('/api/workspace/setup', {body});
+            const changed=draft.changed(submitted);draft.saved(submitted);
             toast('安全区已保存，可以扫描预览分类方案', 'ok');
-            if (el.isConnected) await refresh();
+            if (el.isConnected) {if(!changed)await refresh();else button.disabled=false;}
           } catch (error) { if (el.isConnected) { $('#organizer-error').textContent = error.message; button.disabled = false; } }
         };
         $('#organizer-preview').onclick = () => start('/api/organizer/preview', {}, '分类预览已开始，完成后会显示方案');
