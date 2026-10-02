@@ -40,6 +40,15 @@
       save();
       return show();
     }
+    function replaceCurrent(hash) {
+      if (pending || index < 0 || !/^#\//.test(hash)) return false;
+      // Recovery metadata changes the current URL without rendering or adding
+      // an entry. Keep the marker and recorded hash aligned for Back/Forward.
+      entries[index].hash = hash;
+      history.replaceState(marker(entries[index]), '', hash);
+      notify();
+      return true;
+    }
     function travel(delta) {
       if (pending || index + delta < 0 || index + delta >= entries.length) return false;
       pending = true; notify();
@@ -57,7 +66,7 @@
       save(); index = target; pending = false;
       return show();
     }
-    return { start, navigate, refresh, sync, back: () => travel(-1), forward: () => travel(1), status };
+    return { start, navigate, refresh, replaceCurrent, sync, back: () => travel(-1), forward: () => travel(1), status };
   }
   return { create };
 });

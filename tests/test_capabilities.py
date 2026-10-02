@@ -1,7 +1,11 @@
 import copy
+import contextlib
 import datetime as dt
+import hashlib
 import json
+import uuid
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -86,6 +90,37 @@ class CapabilityTests(unittest.TestCase):
         return cap.execute(self.cfg, 'capability_dispatch', dict(
             capability_id=identifier, project='中文项目', title='制作短片',
             input_json=json.dumps(inputs if inputs is not None else {'prompt': '一只猫', 'seconds': 5}, ensure_ascii=False), **extra))
+
+    def test_dispatch_request_recovers_after_declaration_withdrawal_without_a_second_task(self):
+        self.publish()
+        identifier = cap.catalog(self.cfg)['items'][0]['id']
+        payload = {'capability_id': identifier, 'project': 'Recovery', 'title': 'Stable intent',
+                   'input_json': '{"prompt":"一只猫","seconds":5}', 'request_id': str(uuid.uuid4())}
+        first = cap.dispatch(self.cfg, payload)
+        self.publish([])
+        # A new connection reads the durable receipt, before current catalog lookup.
+        replay = cap.dispatch(dict(self.cfg), payload)
+        self.assertTrue(replay['deduplicated'])
+        self.assertEqual(replay['task']['id'], first['task']['id'])
+        with collaboration.store(self.cfg) as (con, root):
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM tasks WHERE root=?', (root,)).fetchone()[0], 1)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM capability_dispatches WHERE root=?', (root,)).fetchone()[0], 1)
+        for field, value in [('title', 'Changed'), ('input_json', '{"prompt":"changed"}')]:
+            with self.assertRaisesRegex(ValueError, '同一派单请求'):
+                cap.dispatch(self.cfg, {**payload, field: value})
+
+    def test_dispatch_request_survives_concurrent_retry_and_rejects_invalid_uuid(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.publish()
+        request_id = str(uuid.uuid4())
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: self.dispatch(request_id=request_id), range(4)))
+        self.assertEqual(len({r['task']['id'] for r in results}), 1)
+        self.assertEqual(sum(not r['deduplicated'] for r in results), 1)
+        for invalid in ('not-a-uuid', 123, request_id.upper()):
+            with self.assertRaisesRegex(ValueError, 'UUID'):
+                self.dispatch(request_id=invalid)
+
 
     def test_publish_snapshot_stable_ids_and_other_clients_preserved(self):
         result = self.publish()
@@ -566,6 +601,124 @@ class CapabilityTests(unittest.TestCase):
         for value in ([], ['三'], ['一', '二', '一']):
             with self.assertRaises(ValueError):
                 self.dispatch({'items': value})
+
+
+class DispatchLookupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.root = self.base / 'Workspace'
+        self.root.mkdir()
+        self.cfg = {'ai_root': str(self.root), 'workspace_managed': True}
+        self.data = self.base / 'data'
+        self.patcher = patch.object(config, 'DATA_DIR', str(self.data))
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.request_id = str(uuid.uuid4())
+
+    def snapshot(self):
+        # Include directory identity, file bytes and timestamps: a new backup,
+        # migration or same-size rewrite must not pass a read-only assertion.
+        if not self.data.exists():
+            return None
+        return tuple(sorted((str(path.relative_to(self.base)), path.is_dir(),
+                             path.stat().st_mtime_ns,
+                             hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+                            for path in [self.data, *self.data.rglob('*')]))
+
+    def lookup(self, cfg=None, request_id=None):
+        return cap.dispatch_receipt(cfg or self.cfg, {'request_id': request_id or self.request_id})
+
+    def create_dispatch(self, cfg=None, actor='ui', request_id=None):
+        cfg = cfg or self.cfg
+        if 'codex' not in harnesses.allowed_ids(cfg, include_disabled=True):
+            harnesses.save(cfg, {'id': 'codex', 'revision': 0, 'connection_mode': 'mcp_stdio'})
+        collaboration.execute(cfg, 'client_heartbeat', {
+            'client_id': 'lookup-client', 'tool': 'codex', 'name': 'Lookup fixture', 'protocol_version': 1})
+        cap.publish(cfg, {'client_id': 'lookup-client', 'capabilities_json': json.dumps([{
+            'key': 'lookup.fixture', 'name': '回查夹具', 'kind': 'mcp_tool',
+            'provider': 'Fixture', 'server': 'fixture', 'domains': ['code'],
+            'inputs': {'type': 'object'}}])})
+        return cap.dispatch(cfg, {'capability_id': cap.catalog(cfg)['items'][0]['id'],
+            'project': 'Lookup', 'title': 'Opaque receipt fixture', 'input_json': '{}',
+            'client_id': 'lookup-client', 'request_id': request_id or self.request_id}, actor=actor)
+
+    def test_lookup_missing_data_does_not_create_store_or_connect(self):
+        self.assertFalse(self.data.exists())
+        with patch.object(collaboration, 'store', side_effect=AssertionError('write store used')), \
+                patch.object(collaboration.sqlite3, 'connect', side_effect=AssertionError('missing DB opened')):
+            result = self.lookup()
+        self.assertEqual(result, {'found': False, 'request_id': self.request_id,
+                                  'deduplicated': True, 'task': None})
+        self.assertFalse(self.data.exists())
+
+    def test_lookup_legacy_schema_does_not_migrate_backup_or_change_bytes(self):
+        self.data.mkdir()
+        db = self.data / 'collaboration.sqlite3'
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            con.execute('CREATE TABLE tasks (id TEXT PRIMARY KEY, root TEXT, title TEXT)')
+            con.execute('INSERT INTO tasks VALUES (?, ?, ?)',
+                        (str(uuid.uuid4()), config._key(str(self.root)), 'Preserve legacy row'))
+            con.execute('PRAGMA user_version=1')
+        before = self.snapshot()
+        with patch.object(collaboration, 'store', side_effect=AssertionError('write store used')), \
+                patch.object(collaboration, '_migrate_submission_schema',
+                             side_effect=AssertionError('legacy schema migrated')):
+            self.assertFalse(self.lookup()['found'])
+            self.assertFalse(self.lookup()['found'])
+        self.assertEqual(self.snapshot(), before)
+        with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)) as con:
+            self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+            self.assertEqual([r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")], ['tasks'])
+            self.assertEqual(con.execute('SELECT title FROM tasks').fetchone()[0], 'Preserve legacy row')
+
+    def test_lookup_only_returns_ui_receipt_in_current_root(self):
+        first = self.create_dispatch()
+        other = self.base / 'Other'
+        other.mkdir()
+        other_cfg = dict(self.cfg, ai_root=str(other))
+        self.assertFalse(self.lookup(other_cfg)['found'])
+        # The same UUID is valid in another root and for an MCP caller. Neither
+        # receipt may replace the UI receipt scoped to this workspace.
+        other_task = self.create_dispatch(other_cfg)['task']
+        mcp_task = self.create_dispatch(actor='mcp')['task']
+        unknown_id = str(uuid.uuid4())
+        before = self.snapshot()
+        with patch.object(collaboration, 'store', side_effect=AssertionError('write store used')):
+            current = self.lookup()
+            other_result = self.lookup(other_cfg)
+            missing = self.lookup(request_id=unknown_id)
+        self.assertTrue(current['found'])
+        self.assertEqual(current['task']['id'], first['task']['id'])
+        self.assertEqual(other_result['task']['id'], other_task['id'])
+        self.assertNotEqual(current['task']['id'], mcp_task['id'])
+        self.assertFalse(missing['found'])
+        self.assertIsNone(missing['task'])
+        serialized = json.dumps(current)
+        for private_field in ('payload_hash', 'lease_hash', 'caller', 'mcp:lookup-client'):
+            self.assertNotIn(private_field, serialized)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_lookup_mcp_only_receipt_is_not_exposed_to_ui(self):
+        self.create_dispatch(actor='mcp')
+        before = self.snapshot()
+        result = self.lookup()
+        self.assertEqual(result, {'found': False, 'request_id': self.request_id,
+                                  'deduplicated': True, 'task': None})
+        self.assertEqual(self.snapshot(), before)
+
+    def test_lookup_rejects_invalid_uuid_and_extra_fields_without_creating_data(self):
+        for invalid in ('not-a-uuid', '', 123, None, self.request_id.upper(),
+                        self.request_id.replace('-', ''), '{' + self.request_id + '}'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'UUID'):
+                cap.dispatch_receipt(self.cfg, {'request_id': invalid})
+        for invalid_body in (None, [], {}, {'request_id': self.request_id, 'caller': 'mcp:lookup-client'},
+                             {'request_id': self.request_id, 'client_id': 'lookup-client'}):
+            with self.subTest(body=invalid_body), self.assertRaisesRegex(ValueError, '只接受 request_id'):
+                cap.dispatch_receipt(self.cfg, invalid_body)
+        self.assertFalse(self.data.exists())
 
 
 if __name__ == '__main__':

@@ -26,6 +26,7 @@ publish(cfg, body)
 catalog(cfg, body=None)
 recommend(cfg, body)
 dispatch(cfg, body, actor='ui')
+dispatch_receipt(cfg, body)  # 本机 UI 的只读派单回查
 discover(cfg)  # 仅本机 UI 可通过 execute 使用
 ```
 
@@ -105,11 +106,21 @@ discover(cfg)  # 仅本机 UI 可通过 execute 使用
 
 ### capability_dispatch
 
-请求 `{capability_id, project, title, input_json}`。MCP 请求还需 bridge 注入已注册的 client_id。input_json 为最大 16000 字符的 JSON 对象字符串，须满足该能力的输入 schema。能力必须属于当前工作环境。
+请求 `{capability_id, project, title, input_json, request_id?}`。MCP 请求还需 bridge 注入已注册的 client_id。input_json 为最大 16000 字符的 JSON 对象字符串，须满足该能力的输入 schema。能力必须属于当前工作环境。
 
 模块调用现有 `collaboration.execute(..., 'task_create', ...)`，target_tool 只能来自已登记能力；任务说明保存能力 ID/key、提供方/server、声明客户端、原始输入、约束和预期产物。任务目录、租约与产物边界沿用原协作协议。返回 `{status:'queued', worker_required:true, capability_id, target_tool, execution_mode:'harness_queue', task}`，不包含生成结果或远端调用成功标记。
 
 2.10 派单还会重新核对执行工作端已登记、启用且为 MCP stdio。通过修改 provider/server、声明内容或客户端实例名不能绕过工作端登记。
+
+`request_id` 是可选的规范小写 UUID。提供时，普通派单在协作库 `capability_dispatches` 中按工作区、调用者和请求编号持久去重；UI 与各 MCP 客户端的编号作用域分开。请求摘要包含能力 ID、项目、标题及原样 `input_json` 字符串；同编号不同内容被拒绝，JSON 空格变化也可能改变摘要。重复提交返回原任务和 `deduplicated:true`，首次创建返回 `deduplicated:false`。已记录的原请求可在能力撤回后恢复，不重新建任务。省略编号的 legacy 调用保持旧行为，每次合法提交仍可新建任务；不能追补去重回执或承诺回复丢失后的唯一派单。
+
+### dispatch-receipt（UI，只读）
+
+`POST /api/capabilities/dispatch-receipt` 请求 `{_workspace_root, request_id}`；HTTP 层先核对当前工作区，模块仅接受 `{request_id}`。只查询当前工作区中调用者为 UI 的回执，不查询 MCP 客户端的派单。返回 `{found, request_id, deduplicated:true, task}`；没有回执时 `found:false, task:null`。UUID 非规范或带额外调用者字段会拒绝。查询不创建数据目录、数据库或任务；旧库无派单表返回未找到，不触发迁移或备份。
+
+能力中心提交前生成请求编号。回复丢失时保留编号，用户可只读回查；页面硬刷新后仅以 opaque 请求编号和工作区 hash 恢复待核对标记，不在该恢复标记中持久保存输入正文、项目路径或凭据。普通文字草稿仍由原草稿机制管理。恢复标记不构成授权，也不自动重派；须切回原工作区核对回执，未找到时仍不新建任务。当前页面中重试同一冻结内容沿用原编号；结束核对后新建请求须由用户明确操作。
+
+这里是普通工作端队列的去重与回查，原生执行账本、精确发布端领取和合作软件授权另见 [可选执行协议](EXECUTION_PROTOCOL.md)。派单回执不能证明模型执行或成果收录成功。
 
 ### capability_discover（UI）
 

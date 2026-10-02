@@ -1,12 +1,12 @@
 # 曜核
 
-**把本地 AI 工作区、模型、能力和工作成果放在同一个工作台里管理。** 原名 AI Hub。可独立使用；与映序、棱光的协作接入是可选功能，完整自动串联仍待三方适配与验收。
+**把本地 AI 工作区、模型、能力和工作成果放在同一个工作台里管理。** 原名 AI Hub。可独立使用；与映序、棱光的协作接入可选，使用范围和候选适配状态见 [协作边界](docs/PRODUCT_COOPERATION.md)。
 
 ## 获取与启动
 
-当前公开下载版为 **2.13.2**：[Windows x64 桌面包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/AI-Hub-v2.13.2-Windows-x64.zip) · [源码包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/AI-Hub-v2.13.2-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/SHA256SUMS.txt)。
+本包版本为 **2.13.11**。公开下载与文件摘要以 [GitHub 发布页](https://github.com/NOXEVYR/ai-hub/releases/latest)为准；本地源码、候选包和正式安装分别验收，版本号本身不是已发布或已安装的证明。
 
-本目录为 **2.13.10 整合候选版，尚未公开发布**，不要把源码中的版本号当作已发布版本。[候选整合说明](docs/RELEASE_2.13.10.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。
+[本轮修复说明](docs/RELEASE_2.13.11.md) · [2.13.10 历史整合说明](docs/RELEASE_2.13.10.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。
 
 运行条件：**Windows x64、.NET Framework 4.8+、Python 3.9+、Microsoft Edge WebView2 Runtime**。桌面包不捆绑 Python、WebView2 或模型权重。缺少环境时先安装 [Python](https://www.python.org/downloads/windows/) 和 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)。也支持将可用 Python 解释器放到 `runtime/python.exe`。
 

@@ -553,7 +553,13 @@ def execute(cfg, operation, body, *, bearer=None, public_identity=None, owner_au
                 if not replay and (row['dispatch_state'] != 'queued_ready' or row['provider_state'] != 'not_started' or row['cancel_requested'] or task['status'] != 'queued'):
                     raise ExecutionError('claim_conflict', '任务已被领取、取消或尚未完成目录准备。')
                 token, stamp = secrets.token_urlsafe(32), co._now()
-                con.execute("UPDATE tasks SET status='active',owner=?,lease_hash=?,updated_at=? WHERE id=?", (grant['subject'], _sha(token), stamp, task['id']))
+                lease_hash = _sha(token)
+                # A replay recovers the same claim, rather than transferring its
+                # resources to a new worker or a later ordinary task claim.
+                if replay and con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_resources'").fetchone():
+                    con.execute('UPDATE task_resources SET lease_hash=? WHERE root=? AND task_id=? AND client_id=? AND lease_hash=?',
+                                (lease_hash, root, task['id'], grant['subject'], task['lease_hash']))
+                con.execute("UPDATE tasks SET status='active',owner=?,lease_hash=?,updated_at=? WHERE id=?", (grant['subject'], lease_hash, stamp, task['id']))
                 if not replay:
                     con.execute('UPDATE task_report_contracts SET claim_id=?,completed_claim_id=NULL WHERE root=? AND task_id=?', (str(uuid.uuid4()), root, task['id']))
                 con.execute("UPDATE executions SET dispatch_state='claimed',claim_request_id=?,updated_at=? WHERE id=?", (body['claim_request_id'], stamp, row['id']))

@@ -43,8 +43,8 @@
     const sourceDraft = el?.dataset.librarySourceDirty==='true' ? [...(el.querySelector('#library-source-editor')?.querySelectorAll('[data-source-row]')||[])].map(row=>({tool:row.querySelector('[data-source-tool]').value,kind:row.querySelector('[data-source-kind]').value,path:row.querySelector('[data-source-path]').value})) : null;
     return {limit:Number(el?.dataset.libraryLimit)||48,sourceDraft,root:sourceDraft ? el?.dataset.librarySourceRoot||'' : el?.dataset.libraryRoot||'',tab:el?.dataset.libraryTab||'skills',query:el?.querySelector('#library-query')?.value||'',domain:el?.querySelector('#library-domain')?.value||'',tool:el?.querySelector('#library-tool')?.value||'',task:child?.dataset.loaded?taskUI.capture(child):null};
   }
-  function createPage({api,heading,taskUI,copyPath}) {
-    const taskPage = taskUI.createPage({api});
+  function createPage({api,heading,taskUI,copyPath,updateRoute}) {
+    const taskPage = taskUI.createPage({api,updateRoute});
     let generation=0;
     return async (el,params=new URLSearchParams(),restored) => {
       const run=++generation, active=()=>el.isConnected&&run===generation;

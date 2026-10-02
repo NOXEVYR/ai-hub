@@ -110,7 +110,7 @@ class InteropHTTPTests(unittest.TestCase):
 
     def test_old_facade_call_signature_and_health_remain_compatible(self):
         code,_,raw=api.dispatch(None,self.cfg,'GET','/api/health',{},None)
-        self.assertEqual(code,200);self.assertEqual(json.loads(raw)['version'],'2.13.10')
+        self.assertEqual(code,200);self.assertEqual(json.loads(raw)['version'],'2.13.11')
         code,health=self.request('/api/health');self.assertEqual(code,200)
         self.assertEqual(health['service_instance_id'],self.control.record['instance_id'])
         self.assertNotIn(self.control.record['token'],json.dumps(health))

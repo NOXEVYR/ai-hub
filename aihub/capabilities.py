@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 import threading
+import uuid
 
 from . import collaboration, config, capability_discovery
 
@@ -426,10 +427,43 @@ def recommend(cfg, body):
                 explanation='根据场景与声明文字筛选候选；不衡量实际质量、成本或任务成功率，需核对输入和限制。')
 
 
+def _request_id(value):
+    try:
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+            raise ValueError()
+    except ValueError:
+        raise ValueError('派单 request_id 必须为规范小写 UUID。') from None
+    return value
+
+
+def dispatch_receipt(cfg, body):
+    if not isinstance(body, dict) or set(body) != {'request_id'}:
+        raise ValueError('派单回查只接受 request_id。')
+    return collaboration.dispatch_lookup(cfg, _request_id(body['request_id']))
+
+
 def dispatch(cfg, body, actor='ui'):
     if actor == 'mcp':
         _client(cfg, body.get('client_id'))
     identifier = _text(body.get('capability_id'), 'capability_id', 64)
+    intent = None
+    if 'request_id' in body:
+        request_id = _request_id(body['request_id'])
+        inputs = _json(body.get('input_json', '{}'), 16000)
+        _safe_data(inputs)
+        request = {'capability_id': identifier, 'project': collaboration._segment(body.get('project'), 'project'),
+                   'title': collaboration._text(body.get('title'), 'title'),
+                   'input_json': body.get('input_json', '{}')}
+        fingerprint = hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True,
+                                                separators=(',', ':')).encode('utf-8')).hexdigest()
+        caller = 'ui' if actor == 'ui' else 'mcp:' + body['client_id']
+        intent = (caller, request_id, fingerprint)
+        existing = collaboration.dispatch_receipt(cfg, intent)
+        if existing is not None:
+            return {'status': existing['status'], 'worker_required': existing['status'] in {'queued', 'active'},
+                    'capability_id': identifier, 'target_tool': existing['target_tool'],
+                    'execution_mode': 'harness_queue', 'task': existing,
+                    'request_id': request_id, 'deduplicated': True}
     item = next((v for v in catalog(cfg)['items'] if v['id'] == identifier), None)
     if not item:
         raise ValueError('当前工作环境找不到该能力，请刷新目录。')
@@ -445,9 +479,10 @@ def dispatch(cfg, body, actor='ui'):
         'verification_status': 'unverified',
         'workflow': 'task_claim → artifact_write/artifact_register → task_finish；交接使用 task_handoff。'}, ensure_ascii=False)
     task = collaboration.execute(cfg, 'task_create', {'project': body.get('project'), 'title': body.get('title'),
-                'target_tool': item['target_tool'], 'description': description}, actor=actor)
-    return {'status': 'queued', 'worker_required': True, 'capability_id': identifier,
-            'target_tool': item['target_tool'], 'execution_mode': 'harness_queue', 'task': task}
+                'target_tool': item['target_tool'], 'description': description}, actor=actor, dispatch_intent=intent)
+    return {'status': task['status'], 'worker_required': task['status'] in {'queued', 'active'}, 'capability_id': identifier,
+            'target_tool': task['target_tool'], 'execution_mode': 'harness_queue', 'task': task,
+            **({'request_id': task['request_id'], 'deduplicated': task['deduplicated']} if intent else {})}
 
 
 def _known_skill_roots():

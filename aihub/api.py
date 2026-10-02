@@ -1261,15 +1261,15 @@ def capabilities_request(db, cfg, params, body):
                 cfg.clear()
                 cfg.update(updated)
                 return _json_bytes({'saved': True, 'configured_sources': sources, 'sources_revision': source_revision(cfg), 'workspace_root': cfg.get('ai_root', '')})
-        if action == 'dispatch':
+        if action in {'dispatch', 'dispatch-receipt'}:
             if not isinstance(body, dict):
                 return _err('能力调度请求必须是对象')
             with organization.LOCK:
                 expected = body.get('_workspace_root')
                 if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
                     return _err('工作环境已切换，请刷新后重试。', 409)
-                result = capabilities.execute(cfg, 'capability_dispatch',
-                    {k: v for k, v in body.items() if k != '_workspace_root'}, actor='ui')
+                payload = {k: v for k, v in body.items() if k != '_workspace_root'}
+                result = capabilities.dispatch_receipt(cfg, payload) if action == 'dispatch-receipt' else capabilities.execute(cfg, 'capability_dispatch', payload, actor='ui')
                 response_root = cfg.get('ai_root', '')
         else:
             snapshot = copy.deepcopy(cfg)
@@ -1334,7 +1334,7 @@ ROUTES = [
     ('POST', r'^/api/workcenter/(?P<action>classify|reveal|removal-preview|removal-apply|removal-restore)$', workcenter_request),
     ('POST', r'^/api/context/reveal$', context_reveal),
     ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),
-    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch|sources)$', capabilities_request),
+    ('POST', r'^/api/capabilities/(?P<action>recommend|dispatch|dispatch-receipt|sources)$', capabilities_request),
     ("GET", r"^/api/workspace/status$", workspace_environment_status),
     ("POST", r"^/api/workspace/(?P<action>preview|apply|detach_preview|detach_apply)$", workspace_environment_action),
     ("POST", r"^/api/workspace/project/(?P<action>preview|apply)$", workspace_project_action),
@@ -1345,7 +1345,7 @@ ROUTES = [
     ("GET", r"^/api/organizer/status$", organizer_status),
     ("GET", r"^/api/organizer/plan$", organizer_plan),
     ("POST", r"^/api/organizer/(?P<action>preview|apply|undo)$", organizer_action),
-    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.10", "desktop_shell_version": "2.13.10", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
+    ("GET", r"^/api/health$", lambda db, cfg, params, body: _json_bytes({"app": "ai-hub", "version": "2.13.11", "desktop_shell_version": "2.13.11", "jobs_running": any(j["status"] == "running" for j in jobs.get_jobs())})),
     ("GET", r"^/api/management$", management_summary),
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),

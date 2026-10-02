@@ -10,7 +10,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from aihub import capabilities, collaboration as co, config, execution as ex, harnesses, service_control
+from aihub import capabilities, collaboration as co, collaboration_resources as resources, config, execution as ex, harnesses, service_control
 
 
 class ExecutionTests(unittest.TestCase):
@@ -58,6 +58,41 @@ class ExecutionTests(unittest.TestCase):
 
     def publish(self, items=None):
         capabilities.publish(self.cfg, {'client_id': 'publisher', 'capabilities_json': json.dumps(items if items is not None else [self.declaration], ensure_ascii=False)})
+
+    def test_claim_recovery_keeps_resource_cleanup_bound_to_same_claim(self):
+        accepted = self.call('accept', self.intent, self.source)
+        claim_id = str(uuid.uuid4())
+        first = self.claim(accepted, claim_id=claim_id)
+        owner = {'task_id': first['task']['id'], 'client_id': 'publisher', 'lease_token': first['lease_token'], '_workspace_root': str(self.root)}
+        identity = {'browser_id': 'test-browser', 'session_id': 'test-session', 'tab_id': 'test-tab'}
+        resource = resources.execute(self.cfg, 'resource_register', {**owner,
+            'resource_type': 'browser_tab', 'identity': identity,
+            'ownership': 'task_exclusive', 'temporary': True})
+        unrelated_task = co.execute(self.cfg, 'task_create', {'project': 'Synthetic', 'title': 'Unrelated'})
+        unrelated_claim = co.execute(self.cfg, 'task_claim', {'task_id': unrelated_task['id'], 'client_id': 'publisher'})
+        unrelated = resources.execute(self.cfg, 'resource_register', {'task_id': unrelated_task['id'],
+            'client_id': 'publisher', 'lease_token': unrelated_claim['lease_token'], '_workspace_root': str(self.root), 'resource_type': 'browser_tab',
+            'identity': {**identity, 'tab_id': 'other-tab'}, 'ownership': 'task_exclusive', 'temporary': True})
+        with co.store(self.cfg) as (con, root):
+            old_rows = {r['id']: dict(r) for r in con.execute('SELECT * FROM task_resources')}
+            original_claim = con.execute('SELECT claim_id FROM task_report_contracts WHERE task_id=?', (first['task']['id'],)).fetchone()[0]
+        second = self.claim(accepted, claim_id=claim_id)
+        recovered = self.claim(accepted, claim_id=claim_id)
+        self.assertTrue(second['lease_rotated'])
+        self.assertTrue(recovered['lease_rotated'])
+        with co.store(self.cfg) as (con, root):
+            rows = {r['id']: dict(r) for r in con.execute('SELECT * FROM task_resources')}
+            self.assertEqual(con.execute('SELECT claim_id FROM task_report_contracts WHERE task_id=?', (first['task']['id'],)).fetchone()[0], original_claim)
+        self.assertEqual(rows[unrelated['id']], old_rows[unrelated['id']])
+        expected = {**old_rows[resource['id']], 'lease_hash': ex._sha(recovered['lease_token'])}
+        self.assertEqual(rows[resource['id']], expected)
+        evidence = {'identity': identity, 'observed_at': co._now(), 'outcome': 'absent'}
+        request = {'resource_id': resource['id'], 'state': 'closed', 'evidence': evidence}
+        for stale_token in (first['lease_token'], second['lease_token']):
+            with self.assertRaises(ValueError):
+                resources.execute(self.cfg, 'resource_cleanup_report', {**owner, **request, 'lease_token': stale_token})
+        closed = resources.execute(self.cfg, 'resource_cleanup_report', {**owner, **request, 'lease_token': recovered['lease_token']})
+        self.assertEqual(closed['state'], 'closed')
 
     def accept(self, **changes):
         return self.call('accept', dict(self.intent, **changes), self.source)

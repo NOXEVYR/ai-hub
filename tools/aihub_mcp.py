@@ -172,7 +172,7 @@ DEFINITIONS = [
          {'query': field(max_length=2000), 'domain': field()}, ('query',), read_only=True),
     spec('capability_dispatch', 'Queue a capability task with validated inputs and assigned output/report paths; worker must claim and execute.',
          {'capability_id': field(max_length=64), 'project': field(max_length=120), 'title': field(max_length=1000),
-          'input_json': field(max_length=16000)}, ('capability_id', 'project', 'title', 'input_json')),
+           'input_json': field(max_length=16000), 'request_id': dict(field(max_length=36), pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')}, ('capability_id', 'project', 'title', 'input_json')),
 ]
 BY_NAME = {item['name']: item for item in DEFINITIONS}
 
@@ -439,7 +439,7 @@ class Bridge:
             return {'protocolVersion': version if version in VERSIONS else VERSIONS[0],
                     'capabilities': {'tools': {'listChanged': False},
                                      'resources': {'subscribe': False, 'listChanged': False}},
-                    'serverInfo': {'name': 'aihub-collaboration', 'version': '2.13.10'},
+                    'serverInfo': {'name': 'aihub-collaboration', 'version': '2.13.11'},
                     'instructions': GUIDE}
         if method == 'notifications/initialized':
             if self.initialized:

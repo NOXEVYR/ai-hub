@@ -132,6 +132,9 @@ _SCHEMA = [
     client_id TEXT NOT NULL,submission_id TEXT NOT NULL,payload_hash TEXT NOT NULL,
     claim_id TEXT NOT NULL,artifact_id TEXT NOT NULL,candidate_ids TEXT NOT NULL,
     PRIMARY KEY(root,task_id,client_id,submission_id),FOREIGN KEY(artifact_id) REFERENCES artifacts(id))''',
+    '''CREATE TABLE IF NOT EXISTS capability_dispatches(root TEXT NOT NULL,caller TEXT NOT NULL,
+    request_id TEXT NOT NULL,payload_hash TEXT NOT NULL,task_id TEXT NOT NULL,
+    PRIMARY KEY(root,caller,request_id),FOREIGN KEY(task_id) REFERENCES tasks(id))''',
     '''CREATE TABLE IF NOT EXISTS harness_invocations(root TEXT NOT NULL,client_id TEXT NOT NULL,tool TEXT NOT NULL,evidence_key TEXT NOT NULL,last_success TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(root,client_id))''',
     '''CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, root TEXT NOT NULL, project TEXT NOT NULL,
     title TEXT NOT NULL, description TEXT NOT NULL, target_tool TEXT NOT NULL, status TEXT NOT NULL,
@@ -175,7 +178,7 @@ def _migrate_submission_schema(con, path, *, prepare_execution=False):
     existing_tasks = bool(con.execute('PRAGMA table_info(tasks)').fetchall())
     new_tables = existing_tasks and any(not con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
-        for name in ('task_report_contracts', 'artifact_claims', 'artifact_submissions'))
+        for name in ('task_report_contracts', 'artifact_claims', 'artifact_submissions', 'capability_dispatches'))
     new_execution = prepare_execution and existing_tasks and any(not con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
         for name in ('execution_meta', 'execution_grants', 'executions', 'execution_observations'))
@@ -194,7 +197,7 @@ def _migrate_submission_schema(con, path, *, prepare_execution=False):
         for table, columns in missing.items():
             for column, kind in columns.items():
                 con.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + kind)
-        for sql in _SCHEMA[:3]:
+        for sql in _SCHEMA[:4]:
             con.execute(sql)
         if new_execution:
             from . import execution
@@ -600,7 +603,51 @@ def _memory_candidates(payload):
     return validated
 
 
-def execute(cfg, action, payload, actor='ui'):
+def _dispatch_receipt(con, root, intent):
+    caller, request_id, payload_hash = intent
+    row = con.execute('SELECT * FROM capability_dispatches WHERE root=? AND caller=? AND request_id=?',
+                      (root, caller, request_id)).fetchone()
+    if not row:
+        return None
+    if not secrets.compare_digest(row['payload_hash'], payload_hash):
+        raise ValueError('同一派单请求编号不能用于不同内容；请先核对原任务。')
+    task = _public(_get(con, 'tasks', root, row['task_id'], include_deleted=True), con)
+    return dict(task, request_id=request_id, deduplicated=True)
+
+
+def dispatch_receipt(cfg, intent):
+    """Recover a frozen queue intent without consulting its current declaration."""
+    with store(cfg) as (con, root):
+        return _dispatch_receipt(con, root, intent)
+
+
+def dispatch_lookup(cfg, request_id):
+    root = config._key(root_path(cfg))
+    result = {'found': False, 'request_id': request_id, 'deduplicated': True, 'task': None}
+    with _LOCK:
+        path = Path(config.DATA_DIR) / 'collaboration.sqlite3'
+        config._check_ancestors(str(path.parent))
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            candidate = Path(str(path) + suffix)
+            if os.path.lexists(candidate):
+                info = candidate.lstat()
+                if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError('协作数据库不能使用链接或特殊文件。')
+        if not path.exists():
+            return result
+        with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as con:
+            con.row_factory = sqlite3.Row
+            con.execute('PRAGMA query_only=ON')
+            if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='capability_dispatches'").fetchone():
+                return result
+            row = con.execute('SELECT task_id FROM capability_dispatches WHERE root=? AND caller=? AND request_id=?',
+                              (root, 'ui', request_id)).fetchone()
+            if row:
+                result.update(found=True, task=_public(_get(con, 'tasks', root, row['task_id'], include_deleted=True), con))
+            return result
+
+
+def execute(cfg, action, payload, actor='ui', *, dispatch_intent=None):
     if not isinstance(payload, dict) or actor not in {'ui', 'mcp'}:
         raise ValueError('无效协作请求。')
     ui_only = {'artifact_pin', 'memory_review', 'memory_list', 'task_requeue',
@@ -625,6 +672,10 @@ def execute(cfg, action, payload, actor='ui'):
             p = payload
             stamp = _now()
             if action == 'task_create':
+                if dispatch_intent is not None:
+                    replay = _dispatch_receipt(con, root, dispatch_intent)
+                    if replay is not None:
+                        return replay
                 report_policy = p.get('report_policy', 'required')
                 if report_policy not in ('required', 'optional'):
                     raise ValueError('report_policy 必须是 required 或 optional。')
@@ -676,6 +727,11 @@ def execute(cfg, action, payload, actor='ui'):
                     handle.flush()
                     os.fsync(handle.fileno())
                 result = _public(_get(con, 'tasks', root, identifier), con)
+                if dispatch_intent is not None:
+                    caller, request_id, payload_hash = dispatch_intent
+                    con.execute('INSERT INTO capability_dispatches(root,caller,request_id,payload_hash,task_id) VALUES(?,?,?,?,?)',
+                                (root, caller, request_id, payload_hash, identifier))
+                    result.update(request_id=request_id, deduplicated=False)
                 _audit(con, root, action, identifier, actor)
             elif action == 'task_list':
                 if p.get('target_tool'):

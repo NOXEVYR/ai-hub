@@ -396,7 +396,7 @@
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
   pages.projects=AIHubWorkcenter.createProjects({...registryEnv,legacyPage:AIHubRegistry.createProjects(registryEnv)});
-  pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities,copyPath});
+  pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities,copyPath,updateRoute:hash=>navigation.replaceCurrent(hash)});
   pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs,openModal,closeModal});
   pages.collaboration=AIHubCollaboration.createPage({api,heading,openModal,closeModal,copyText:async value=>{await navigator.clipboard.writeText(value);}});
 

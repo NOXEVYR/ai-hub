@@ -75,7 +75,7 @@ CFG = {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIHub/2.13.10"
+    server_version = "AIHub/2.13.11"
 
     def log_message(self, fmt, *args):
         # BaseHTTPRequestHandler's default message includes the entire request URL.
@@ -366,6 +366,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class ServiceHTTPServer(ThreadingHTTPServer):
+    # A cold browser opens scripts/styles in a burst. The stdlib's small
+    # default listen backlog can reject assets before handlers are scheduled,
+    # leaving an otherwise healthy local service with an unusable blank page.
+    request_queue_size = 64
+
     def handle_error(self, request, client_address):
         log_runtime_exception()
 

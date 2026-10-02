@@ -41,6 +41,24 @@ function browser(initial = '#/overview') {
   };
 }
 
+test('opaque recovery URL changes retain Back/Forward history and in-memory drafts', () => {
+  const b = browser('#/capabilities?tab=tasks');
+  const request = '#/capabilities?tab=tasks&dispatch_request_id=11111111-1111-4111-8111-111111111111';
+  const renders = b.renders, marker = b.history.state.aiHubNavigation;
+  b.screen({state:{title:'private draft',request_id:'same original request'},top:420});
+  assert.equal(b.app.replaceCurrent(request),true);
+  assert.equal(b.renders,renders);assert.equal(b.pushes,0);
+  assert.deepEqual(b.history.state.aiHubNavigation,marker);
+  b.app.navigate('#/reports');b.app.back();b.settle();
+  assert.equal(b.view.hash,request);assert.equal(b.view.snapshot.state.title,'private draft');
+  assert.equal(b.view.snapshot.top,420);
+  b.app.replaceCurrent('#/capabilities?tab=tasks');
+  b.app.forward();b.settle();b.app.back();b.settle();
+  assert.equal(b.view.hash,'#/capabilities?tab=tasks');
+  assert.equal(b.view.snapshot.state.request_id,'same original request');
+  assert.equal(b.app.replaceCurrent('https://example.com'),false);
+});
+
 test('fresh/deep-linked window never uses external browser history for its Back button', () => {
   const b = browser('#/images?model=example');
   assert.equal(b.app.status().canBack, false);

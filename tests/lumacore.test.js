@@ -25,7 +25,7 @@ test('resource navigation has one model/material entrance and preserves action I
   assert(index.indexOf('src="media.js"')<index.indexOf('src="app.js"'));
   assert.match(index,/资源管理/);assert.match(index,/项目与协作/);assert.match(index,/工作区与维护/);
   assert(!index.includes('出图图库'));assert(!index.includes('模型资产'));
-  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.13\.10/);
+  assert.match(index,/brand-lumacore\.svg/);assert.match(index,/v2\.13\.11/);
   assert.match(index,/<title>曜核 · AI 资产与协作工作台<\/title>/);assert.match(index,/<b>曜核<\/b>/);
   assert(!index.includes('LUMACORE'));assert(!index.includes('LumaCore'));assert(!index.includes('曜瞳'));
 });
