@@ -1,12 +1,12 @@
 # 曜核
 
-**把本地 AI 工作区、模型、能力和工作成果放在同一个工作台里管理。** 原名 AI Hub。可独立使用；与映序、棱光的协作接入是可选功能，完整自动串联仍待三方适配与验收。
+**把本地 AI 工作区、模型、能力和工作成果放在同一个工作台里管理。** 原名 AI Hub。可独立使用；与映序、棱光的协作接入是可选功能，各工具的适配与实际执行证据分别核对。
 
 ## 获取与启动
 
-当前公开下载版为 **2.13.2**：[Windows x64 桌面包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/AI-Hub-v2.13.2-Windows-x64.zip) · [源码包](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/AI-Hub-v2.13.2-Source.zip) · [SHA-256](https://github.com/NOXEVYR/ai-hub/releases/download/v2.13.2/SHA256SUMS.txt)。
+**2.13.10 固定候选已核对**：[Windows x64 桌面包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/5c64be68dadb47090d0554784ef6187b47133822/releases/AI-Hub-v2.13.10-Windows-x64.zip) · [源码包](https://raw.githubusercontent.com/NOXEVYR/ai-hub/5c64be68dadb47090d0554784ef6187b47133822/releases/AI-Hub-v2.13.10-Source.zip) · [SHA-256](https://raw.githubusercontent.com/NOXEVYR/ai-hub/5c64be68dadb47090d0554784ef6187b47133822/releases/AI-Hub-v2.13.10-SHA256.txt)。
 
-本目录为 **2.13.10 整合候选版，尚未公开发布**，不要把源码中的版本号当作已发布版本。[候选整合说明](docs/RELEASE_2.13.10.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。
+公共 Release 发布流程正在核验；固定提交中的安装包与源码已经一致。更新器采用候选通道的绑定清单；2.13.5 及以上可自动更新，更早版本请备份数据后下载完整包。[本版整合说明](docs/RELEASE_2.13.10.md) · [软件更新说明](docs/SOFTWARE_UPDATES.md)。
 
 运行条件：**Windows x64、.NET Framework 4.8+、Python 3.9+、Microsoft Edge WebView2 Runtime**。桌面包不捆绑 Python、WebView2 或模型权重。缺少环境时先安装 [Python](https://www.python.org/downloads/windows/) 和 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)。也支持将可用 Python 解释器放到 `runtime/python.exe`。
 

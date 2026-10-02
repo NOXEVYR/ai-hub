@@ -1,13 +1,17 @@
 {
-  "schema": "ai-hub-update-v1",
+  "schema": "ai-hub-update-v2",
   "app": "ai-hub",
   "channel": "candidate",
-  "version": "2.13.2",
-  "commit": "2ff98cd194540497ec90152592fe90d2241da34e",
+  "version": "2.13.10",
+  "commit": "5c64be68dadb47090d0554784ef6187b47133822",
   "package": {
-    "bytes": 1415161,
-    "sha256": "988a4447efbc537fb266d17bfc48e3f4274361916cb2e76980b8da7a60b56627"
+    "bytes": 1853956,
+    "sha256": "2a2000e19ec64c00469a219e9c3037fb979fb99e05bae31c56d793e7c784736e",
+    "manifest_sha256": "5bcb593d36fcff42e8ac68a063a61af91caeb51212e42185a0631b90dd1f7a61"
   },
-  "notes": "曜核是 AI Hub 的改名升级。2.13.2 修复配套模型用途分类及更新器版本一致性；保留能力中心、右键菜单、工作区引导和人工标签。旧版仅作历史存档，请使用新版。",
-  "min_updater_version": "2.12.0"
+  "notes": "2.13.10 整合工作区、素材管理、能力发现、分类报告与记忆候选；增加可选协作执行协议及所有者授权核对。修复扫描失败历史保留、原生组件加载与更新交接。能力发现不代表接口已鉴权或实际执行；记忆须人工批准后共享。",
+  "min_updater_version": "2.13.5",
+  "platform": "windows",
+  "architecture": "x64",
+  "build_id": "2.13.10-2a2000e19ec64c00"
 }
