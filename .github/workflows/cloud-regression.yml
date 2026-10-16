@@ -1,0 +1,54 @@
+name: Cloud regression (no GPU)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'ci/cloud-regression-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: ${{ matrix.suite }} / ${{ matrix.os }} (no GPU)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            suite: python
+          - os: ubuntu-24.04
+            suite: node
+          - os: ubuntu-24.04
+            suite: protocol
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run ${{ matrix.suite }} regression
+        run: python -B tools/cloud_regression.py ${{ matrix.suite }}
+      - name: Preserve logs and evidence boundary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-regression-${{ matrix.os }}-${{ matrix.suite }}
+          path: outputs/cloud-regression/
+          if-no-files-found: error
+          retention-days: 14
