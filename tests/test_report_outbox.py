@@ -257,6 +257,9 @@ class DeliveryTests(unittest.TestCase):
     def test_evicted_compact_receipt_recovers_only_identical_request_fingerprint(self):
         original = self.bridge.call_tool('report_submit', self.report)
         queue = self.bridge.report_queue()
+        # Eviction is ordered by mtime. Fast writes can tie on Windows; make
+        # this receipt unambiguously older without sleeping or weakening checks.
+        os.utime(queue.path / (original['submission_id'] + '.json'), (946684800, 946684800))
         for number in range(65):
             entry = queue.stage(dict(self.report, filename='receipt-fixture-%s.md' % number))
             entry.update(status='submitted', artifact_id=str(uuid.uuid4()))
