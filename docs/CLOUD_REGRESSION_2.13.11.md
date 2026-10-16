@@ -20,7 +20,7 @@ python -B tools/cloud_regression.py protocol
 | node | Ubuntu 24.04 / Node 22 | app/navigation 语法检查和全部 `tests/*.test.js` |
 | protocol | Ubuntu 24.04 / Python 3.11 | 独立协议重点集，显式列举测试模块，112 项 |
 
-全量 Python 按产品 Windows 平台运行。首轮托管 Windows 实跑 877 项出现 28 failures / 6 errors：日志集中暴露 TEMP 的 RUNNER~1 短路径与 runneradmin 完整路径身份不一致，以及默认 CP1252 读中文失败。脚本因此将 Windows 测试子进程 TEMP/TMP 绑定到规范化的 RUNNER_TEMP，并启用 PYTHONUTF8；不改断言、产品身份检查或测试选择。重跑结果见 PR Actions。当前未修改主分支在 Linux/Python 3.12 的实测为 876 项、4 failures、4 errors、15 skipped：Windows CREATE_NO_WINDOW、Windows start_filetime 进程身份、目录链接的 Windows 删除方式，以及大小写路径规范化导致的 legacy artifact_write 报告检查。该结果不能冒充全量 Linux 支持；这里不修改产品路径语义，不把失败改成成功或 expectedFailure。协议重点集是在 Linux 真实通过的子集，不代表全量通过。Windows 全量也严格传播原始退出码；跳过项目保留在日志中。
+全量 Python 按产品 Windows 平台运行。首轮托管 Windows 实跑 877 项出现 28 failures / 6 errors：日志集中暴露 TEMP 的 RUNNER~1 短路径与 runneradmin 完整路径身份不一致，以及默认 CP1252 读中文失败。脚本因此将 Windows 测试子进程 TEMP/TMP 绑定到规范化的 RUNNER_TEMP，并启用 PYTHONUTF8；不改断言、产品身份检查或测试选择。修正后的 push Actions 已全量 877 项通过；同提交的 PR 重复执行另暴露收据淘汰夹具依赖相同文件 mtime 的偶发失败。test_report_outbox 将原始收据显式设为旧时间，保证淘汰前提成立，保留完整回收/恢复断言；不修改产品淘汰策略。最终结果见 PR Actions。当前未修改主分支在 Linux/Python 3.12 的实测为 876 项、4 failures、4 errors、15 skipped：Windows CREATE_NO_WINDOW、Windows start_filetime 进程身份、目录链接的 Windows 删除方式，以及大小写路径规范化导致的 legacy artifact_write 报告检查。该结果不能冒充全量 Linux 支持；这里不修改产品路径语义，不把失败改成成功或 expectedFailure。协议重点集是在 Linux 真实通过的子集，不代表全量通过。Windows 全量也严格传播原始退出码；跳过项目保留在日志中。
 
 每个命令有 15 分钟超时，job 有 25 分钟超时。退出码非零即 job 失败；JSON/Markdown 结果及完整日志始终尝试上传为 14 天 Actions artifact。记录 GitHub SHA、命令、耗时、退出码和证据边界；计数和 skip 原因以原始 unittest/TAP 日志为准。测试启动的服务使用 127.0.0.1 动态端口、临时 SQLite 和合成工作区，结束关闭，不访问真实用户模型或图库。
 
