@@ -35,8 +35,13 @@ def main():
                     ['node', '--check', 'frontend/navigation.js'],
                     ['node', '--test', '--test-reporter=tap',
                      *[str(p.relative_to(ROOT)) for p in sorted((ROOT / 'tests').glob('*.test.js'))]]]
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8',
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8', PYTHONUTF8='1',
                PYTHONPATH=os.pathsep.join((str(ROOT), str(ROOT / 'tests'))))
+    # Hosted Windows TEMP may use RUNNER~1 while resolve() returns runneradmin.
+    # Give fixtures one canonical temporary root; preserve all identity assertions.
+    if os.name == 'nt' and env.get('RUNNER_TEMP'):
+        temporary = Path(env['RUNNER_TEMP']).resolve(strict=True)
+        env.update(TEMP=str(temporary), TMP=str(temporary))
     results = []
     try:
         for index, command in enumerate(commands):
