@@ -416,3 +416,8 @@ body.lumacore #fs-results:not(:empty) { margin-bottom:18px; }
   .material-page #ma-model,.material-page #ma-dir { grid-column:1/-1; }
   .material-page .media-types .btn { padding:8px 11px; }
 }
+
+/* Explicit read-only model diagnostics; no dashboard polling. */
+.governance-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:20px 0}
+.governance-metrics dt{font-size:12px;color:var(--muted)}
+.governance-metrics dd{margin:6px 0;font-size:20px;font-weight:600}

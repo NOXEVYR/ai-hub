@@ -278,10 +278,10 @@
   setInterval(pollJobs, 2500);
 
   // ---------- 路由 ----------
-  const titles = { overview: "工作总览", models: "模型管理", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
+  const titles = { overview: "工作总览", models: "模型管理", governance: "模型治理诊断", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
     assets:"素材管理", images: "图片生成记录", llm: "语言与语音", files: "文件空间", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作区设置", collaboration:"协作与记忆", settings: "软件设置", organizer: "安全区整理" };
-  const parentPage=page=>({images:'assets',llm:'models',analysis:'models',updates:'models'}[page]||page);
-  const modelTabs=page=>`<nav class="resource-tabs" aria-label="模型管理视图">${[['models','全部模型'],['llm','语言与语音'],['analysis','使用分析'],['updates','版本更新']].map(([key,label])=>`<a href="#/${key}" ${key===page?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`;
+  const parentPage=page=>({images:'assets',llm:'models',analysis:'models',updates:'models',governance:'models'}[page]||page);
+  const modelTabs=page=>`<nav class="resource-tabs" aria-label="模型管理视图">${[['models','全部模型'],['llm','语言与语音'],['analysis','使用分析'],['updates','版本更新'],['governance','治理诊断']].map(([key,label])=>`<a href="#/${key}" ${key===page?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`;
   function parseHash(hash = location.hash) {
     const h = hash.slice(2) || "overview";
     const [page, qs] = h.split("?");
@@ -392,6 +392,7 @@
   }
 
   const pages = {};
+  pages.governance = AIHubModelGovernance.createPage({api,heading,fmtSize});
   pages.assets = AIHubMedia.createPage({api,heading,icon,fmtSize,fmtDate,thumbURL,pager,empty,openMedia,requestDelete:requestImageDeletion});
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
@@ -421,7 +422,7 @@
     <section class="panel lc-maintenance"><div class="panel-head"><div><span class="lc-section-kicker">WORKSPACE CARE</span><h3>资产维护</h3></div><span class="health-score">${mg.check.status==='passed'?'最近检查通过':'尚无检查记录'}</span></div><div class="body">
     ${action('workflow',mg.workflow_pending?`${mg.workflow_pending} 份工作流待核对`:'工作流路径记录',`${mg.workflow_reviewed} 份路径修正版 · 尚未执行生成验收`,'workflows','state=needs_review')}
     ${action('refresh',ov.pending_updates?`${ov.pending_updates} 个模型有版本变化`:'模型版本检查',ov.pending_updates?'核对来源与版本差异':`${ov.state_counts.unchecked||0} 个模型尚未检查更新`,'updates','','green')}
-    ${action('copy',`${mg.duplicate_groups} 组重复候选`,`${fmtSize(mg.duplicate_candidate_bytes)} 候选额外占用 · 未完整哈希确认`,'reports','path='+encodeURIComponent(mg.verification_report))}
+    ${action('copy',`${mg.duplicate_groups} 组重复候选`,`${fmtSize(mg.duplicate_candidate_bytes)} 重复路径长度 · 非可释放空间 · 未完整哈希确认`,'governance','')}
     </div></section>
     <section class="panel lc-storage"><div class="panel-head"><div><span class="lc-section-kicker">STORAGE</span><h3>存储分布</h3></div><a class="link" href="#/files" aria-label="查看文件空间">${icon('arrow',16)}</a></div><div class="body"><div class="storage-summary"><b>${fmtSize(ov.unique_size)}</b><span>扫描范围 · 文件去重后</span></div><div class="segment-bar" aria-label="目录逻辑体积分布">${parts.map((p,i)=>`<span style="width:${100*p.size/total}%;background:${palette[i%palette.length]}" title="${esc(p.name)} ${fmtSize(p.size)}"></span>`).join('')}</div><div class="storage-list">${parts.slice(0,8).map((p,i)=>`<div class="storage-item"><span class="dot" style="background:${palette[i%palette.length]}"></span><button data-nav="files" data-query="path=${encodeURIComponent(p.path)}" title="${esc(p.path)}">${esc(labels[p.name]||p.name.replace(/^\d+_/,''))}</button><b>${fmtSize(p.size)}</b></div>`).join('')}</div><p class="footnote">分区为逻辑体积，硬链接可能重复计入；实际占用参考上方去重值。</p></div></section>
     </div></div>

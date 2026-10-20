@@ -25,14 +25,18 @@ class FileFacts:
     """One request's filesystem snapshot; never shared between requests."""
     def __init__(self):
         self.stats = {}
+        self.errors = {}
 
     def stat(self, path):
         key = path_key(path)
         if key not in self.stats:
             try:
                 self.stats[key] = os.stat(path)
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError) as error:
                 self.stats[key] = None
+                self.errors[key] = ("missing" if isinstance(error, (FileNotFoundError, NotADirectoryError)) else
+                                    "denied" if isinstance(error, PermissionError) else
+                                    "invalid_path" if isinstance(error, (ValueError, TypeError)) else "unavailable")
         return self.stats[key]
 
     def identity(self, path):

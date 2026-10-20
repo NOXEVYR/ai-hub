@@ -4,6 +4,7 @@ import json
 import collections
 import copy
 import functools
+import hashlib
 import mimetypes
 import os
 import re
@@ -266,6 +267,50 @@ def overview(db, cfg, params, body):
         "top_used": top_used, "recent_models": recent,
         "uptime_s": int(_now() - _started),
     })
+
+
+def model_governance_report(db, cfg, params, body):
+    """Explicit metadata diagnostic; never refreshes or rewrites the index."""
+    from . import model_governance
+    def number(key, default, minimum, maximum):
+        value = params.get(key, str(default))
+        if isinstance(value, list):
+            if len(value) != 1:
+                raise ValueError('查询参数不能重复。')
+            value = value[0]
+        if not isinstance(value, str) or not re.fullmatch(r'[0-9]{1,16}', value):
+            raise ValueError('诊断分页参数无效。')
+        result = int(value)
+        if not minimum <= result <= maximum:
+            raise ValueError('诊断分页参数超出范围。')
+        return result
+    def binding(current):
+        scope, args = _source_scope(current)
+        payload = [current.get('ai_root'), current.get('workspace_managed'), scope, args]
+        token = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode('utf-8')).hexdigest()
+        return scope, args, token
+    try:
+        limit = number('limit', 1000, 1, model_governance.MAX_ROWS)
+        after = number('after_id', 0, 0, 9007199254740991)
+        with organization.LOCK:
+            scope, args, token = binding(cfg)
+            if after and _q(params, 'scope_token') != token:
+                return _err('诊断来源已变化或续读凭据缺失，请从首批重新核对。', 409)
+            rows = db.query('SELECT rowid_pk,path,filename,size,missing FROM models WHERE (' + scope +
+                            ') AND rowid_pk>? ORDER BY rowid_pk LIMIT ?', args + [after, limit + 1])
+        more = len(rows) > limit
+        report = model_governance.build_report(rows[:limit])
+        with organization.LOCK:
+            if binding(cfg)[2] != token:
+                return _err('诊断期间工作环境或来源发生变化，请重新核对。', 409)
+        report['coverage'] = {'kind': 'current_source_index_batch', 'after_id': after, 'limit': limit,
+                              'has_more': more, 'next_after_id': rows[limit - 1]['rowid_pk'] if more else None,
+                              'scope_token': token, 'whole_scope': after == 0 and not more,
+                              'cross_batch_totals_supported': False,
+                              'unavailable_sources_included': cfg.get('workspace_managed') is not True}
+        return _json_bytes(report)
+    except ValueError as error:
+        return _err(str(error))
 
 
 def models_list(db, cfg, params, body):
@@ -1350,6 +1395,7 @@ ROUTES = [
     ("GET", r"^/api/workflows$", workflow_summary),
     ("GET", r"^/api/overview$", overview),
     ("GET", r"^/api/models$", models_list),
+    ("GET", r"^/api/models/governance$", model_governance_report),
     ("POST", r"^/api/models/classify$", models_classify),
     ("GET", r"^/api/model/(?P<id>\d+)$", model_detail),
     ("POST", r"^/api/model/(?P<id>\d+)/source$", model_set_source),
