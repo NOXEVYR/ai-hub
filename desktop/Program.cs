@@ -34,6 +34,7 @@ namespace AIHub.Desktop
 
         internal static EventWaitHandle ActivateEvent;
         internal static string LoaderFolder;
+        internal static bool BackgroundStartup;
         private static readonly object libraryLock = new object();
         private static readonly Dictionary<string, Assembly> libraries = new Dictionary<string, Assembly>(StringComparer.Ordinal);
         private static bool resolverRegistered;
@@ -46,9 +47,11 @@ namespace AIHub.Desktop
             Application.SetCompatibleTextRenderingDefault(false);
             try
             {
-                if (args.Length != 0 && !(args.Length == 2 && args[0] == "--root"))
-                    throw new ArgumentException("支持的参数：AI Hub.exe --root <曜核 程序目录>");
-                Hub.Root = Hub.NormalizeRoot(args.Length == 2 ? args[1] : AppDomain.CurrentDomain.BaseDirectory);
+                BackgroundStartup = args.Length > 0 && args[args.Length - 1] == "--background";
+                int argumentCount = args.Length - (BackgroundStartup ? 1 : 0);
+                if (argumentCount != 0 && !(argumentCount == 2 && args[0] == "--root"))
+                    throw new ArgumentException("支持的参数：AI Hub.exe [--root <曜核 程序目录>] [--background]");
+                Hub.Root = Hub.NormalizeRoot(argumentCount == 2 ? args[1] : AppDomain.CurrentDomain.BaseDirectory);
                 if (!Hub.IsAppRoot(Hub.Root))
                     throw new DirectoryNotFoundException("请把 AI Hub.exe 放在曜核 程序文件夹内，与 server.py、launcher.pyw 和 frontend 同级。桌面请使用快捷方式。");
                 Hub.Port = Hub.ReadPort(Path.Combine(Hub.Root, "data", "config.json"));
@@ -67,7 +70,7 @@ namespace AIHub.Desktop
                 {
                     bool owner;
                     try { owner = mutex.WaitOne(0); } catch (AbandonedMutexException) { owner = true; }
-                    if (!owner) { ActivateEvent.Set(); Hub.Log("desktop_reused"); return 0; }
+                    if (!owner) { if (!BackgroundStartup) ActivateEvent.Set(); Hub.Log("desktop_reused"); return 0; }
                     try
                     {
                         // Close the marker-to-mutex race as well. This check is still
@@ -84,6 +87,7 @@ namespace AIHub.Desktop
                         SetCurrentProcessExplicitAppUserModelID("AIHub.Desktop");
                         PrepareLibraries();
                         Hub.Log("desktop_started pid=" + Process.GetCurrentProcess().Id);
+                        if (BackgroundStartup) Hub.Log("AIHub.LoginBackground.v1");
                         RunWindow();
                         return 0;
                     }
@@ -93,7 +97,7 @@ namespace AIHub.Desktop
             catch (Exception e)
             {
                 Hub.Log("desktop_error " + e.GetType().Name + ": " + e.Message);
-                MessageBox.Show(e.Message, "曜核 · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!BackgroundStartup) MessageBox.Show(e.Message, "曜核 · 启动提示", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }
@@ -284,6 +288,8 @@ namespace AIHub.Desktop
         private bool resourcesReleased;
         private bool loaded;
         private bool installingUpdate;
+        private bool backgroundHidden = Program.BackgroundStartup;
+        private bool startupScheduled;
         private readonly AppUpdateUiReady uiReady = new AppUpdateUiReady();
 
         internal HubWindow()
@@ -332,7 +338,24 @@ namespace AIHub.Desktop
                 if (IsDisposed || !IsHandleCreated) return;
                 try { BeginInvoke((Action)BringToUser); } catch (InvalidOperationException) { }
             }, null, Timeout.Infinite, false);
-            Shown += async delegate { await InitializeSafelyAsync(); };
+            Shown += async delegate { if (!startupScheduled) { startupScheduled = true; await InitializeSafelyAsync(); } };
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            if (backgroundHidden && value)
+            {
+                // Create a message-loop handle but never map the window or steal focus.
+                if (!IsHandleCreated) CreateHandle();
+                if (!startupScheduled)
+                {
+                    startupScheduled = true;
+                    BeginInvoke((Action)(async delegate { await InitializeSafelyAsync(); }));
+                }
+                base.SetVisibleCore(false);
+                return;
+            }
+            base.SetVisibleCore(value);
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -384,6 +407,7 @@ namespace AIHub.Desktop
         private void BringToUser()
         {
             if (IsDisposed || closing.IsCancellationRequested) return;
+            backgroundHidden = false;
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Show();
             Activate();

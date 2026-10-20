@@ -187,6 +187,7 @@ class Startup(Fixture):
              mock.patch.object(launcher, "health", side_effect=[None, None, {"app": "ai-hub"}]), \
              mock.patch.object(launcher, "port_busy", return_value=False), \
              mock.patch.object(launcher, "acquire_mutex", return_value=(kernel, 9, True)), \
+             mock.patch.object(launcher.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
              mock.patch.object(launcher.subprocess, "Popen", return_value=proc) as spawn:
             result = launcher.ensure_running(8888)
             self.assertEqual(result["status"], "started")

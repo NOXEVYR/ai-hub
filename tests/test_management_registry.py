@@ -56,10 +56,13 @@ class RegistryTests(unittest.TestCase):
             if result.returncode:
                 self.skipTest('Creating a temporary junction is unavailable')
         def remove_link_only():
-            # os.rmdir removes a directory link itself; never recurse into it.
+            # Unlink a POSIX/Windows symlink; rmdir only a Windows junction. Never recurse.
             if os.path.lexists(link):
                 link.absolute().relative_to(self.base)
-                os.rmdir(link)
+                if link.is_symlink():
+                    link.unlink()
+                else:
+                    os.rmdir(link)
         self.addCleanup(remove_link_only)
 
     def workflow(self):

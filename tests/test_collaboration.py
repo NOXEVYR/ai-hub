@@ -47,6 +47,31 @@ class CollaborationTests(unittest.TestCase):
     def artifact(self, kind='report', filename='result.md', **extra):
         return self.call('artifact_write', **self.lease, kind=kind, title='报告', filename=filename, content='test', **extra)
 
+    def test_required_report_preserves_physical_root_case_and_rejects_forged_path(self):
+        root = self.root / 'MixedCaseWorkspace'
+        root.mkdir()
+        cfg = dict(self.cfg, ai_root=str(root))
+        harnesses.save(cfg, {'id': 'codex', 'revision': 0, 'connection_mode': 'mcp_stdio'})
+        c.execute(cfg, 'client_heartbeat', {'client_id': 'one', 'tool': 'codex', 'name': 'one', 'protocol_version': 1})
+        task = c.execute(cfg, 'task_create', {'project': 'Project', 'title': 'Case-sensitive root'})
+        claim = c.execute(cfg, 'task_claim', {'task_id': task['id'], 'client_id': 'one'})
+        owner = {'task_id': task['id'], 'client_id': 'one', 'lease_token': claim['lease_token']}
+        report = c.execute(cfg, 'artifact_write', dict(owner, kind='report', category='report', title='Result',
+            filename='report.md', content='verified', memory_candidates=[]))
+        self.assertEqual(c.execute(cfg, 'task_list', {'task_id': task['id']})['items'][0]['report_submission']['status'], 'submitted')
+        with c.store(cfg) as (con, key):
+            row = dict(c._get(con, 'tasks', key, task['id']))
+            self.assertEqual(c._physical_task_root(row), root)
+            for fake in (str(self.root / 'other' / '40_Projects' / 'Project' / 'Work' / 'AIHub' / task['id']),
+                         str(root / '40_Projects' / 'WrongProject' / 'Work' / 'AIHub' / task['id'])):
+                row['paths'] = json.dumps({'work': fake})
+                with self.assertRaises(ValueError): c._physical_task_root(row)
+        Path(report['path']).write_text('tampered', encoding='utf-8')
+        with self.assertRaises(ValueError): c.execute(cfg, 'task_finish', dict(owner, summary='must reject changed report'))
+        c.execute(cfg, 'artifact_write', dict(owner, kind='report', category='report', title='Fresh result',
+            filename='fresh.md', content='new verified', memory_candidates=[]))
+        self.assertEqual(c.execute(cfg, 'task_finish', dict(owner, summary='done'))['status'], 'completed')
+
     def test_task_paths_no_overwrite_and_input_validation(self):
         task = self.task()
         self.assertTrue(Path(task['paths']['reports']).is_dir())

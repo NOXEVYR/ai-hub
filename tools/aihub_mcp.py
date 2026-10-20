@@ -6,6 +6,7 @@ import math
 import re
 import sys
 import time
+import uuid
 try:
     from tools.report_outbox import ReportOutbox, OutboxError, MAX_ATTEMPTS
     from tools.mcp_endpoint import resolve_endpoint, EndpointError
@@ -19,6 +20,9 @@ MAX_REPLY = 8 * 1024 * 1024
 TOOLS = ('codex', 'zcode', 'dsh', 'workbuddy')  # compatibility presets, not an allowlist
 TOOL_PATTERN = r'^[a-z][a-z0-9_-]{0,63}$'
 GUIDE = '''AI Hub collaboration protocol v1
+For each managed task, call context_bootstrap then context_ack with its exact bundle ID/hash before work.
+Re-bootstrap after reconnect, task/rules/memory changes or expiry; partial bundles require reading omitted sources.
+Receipts confirm client delivery only, not model comprehension or execution permission.
 Use task_create -> task_claim -> assigned paths -> artifact_write/register -> task_finish.
 Read submission_schema before writing. Every new submission must include category:
 report/plan/requirement/delivery/reference/other_text/temp_candidate.
@@ -107,6 +111,13 @@ RESOURCE_SAMPLE = {'type': 'object', 'properties': {'sampled_at': field(max_leng
        for key in ('ram_available_bytes', 'vram_available_bytes', 'resource_ram_bytes')}},
     'required': ['sampled_at'], 'additionalProperties': False}
 DEFINITIONS = [
+    spec('context_bootstrap', 'Deliver bounded approved memory, known rules and same-project handoffs for a managed task; stores delivery metadata, not execution permission.',
+         {'task_id': field(max_length=128), 'max_bytes': {'type': 'integer', 'minimum': 8192, 'maximum': 131072},
+          'known_revision': {**field(max_length=64), 'pattern': r'^[0-9a-f]{64}$'}}, ('task_id',)),
+    spec('context_ack', 'Confirm this session received this exact bundle; does not prove understanding. Rejects stale context.',
+         {'task_id': field(max_length=128), 'bundle_id': field(max_length=32), 'bundle_sha256': field(max_length=64)},
+         ('task_id', 'bundle_id', 'bundle_sha256')),
+    spec('context_status', 'Read whether this session needs a fresh task bootstrap.', {'task_id': field(max_length=128)}, ('task_id',), read_only=True),
     spec('interop_describe', 'Read the current aihub-interop/1 connection contract without registering a client or executing capabilities. An empty workspace cannot receive dispatch.', read_only=True),
     spec('interop_capability_snapshot', 'Read a normalized stored declaration for a capability, bound to the selected connection revision; no execution or native cancellation.',
          {'capability_id': {**field(max_length=32), 'pattern': r'^[0-9a-f]{32}$'},
@@ -243,6 +254,7 @@ class Bridge:
         self.workspace_root = None
         self.outbox_dir = outbox_dir
         self.outbox = None
+        self.context_session_id = uuid.uuid4().hex  # not authentication; renewed per bridge process
         self.leases = {}  # current process only; never serialized
 
     def request(self, action, payload):
@@ -258,6 +270,8 @@ class Bridge:
         # Direct TCP HTTP avoids proxy environment variables and never follows redirects.
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
         body = dict(payload, client_id=self.client_id)
+        if action in ('context_bootstrap', 'context_ack', 'context_status'):
+            body['session_id'] = self.context_session_id
         if self.workspace_root is not None:
             body['_workspace_root'] = self.workspace_root
         if action == 'client_heartbeat':
