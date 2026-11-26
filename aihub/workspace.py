@@ -214,7 +214,7 @@ def _documents(root):
 适用根目录：`{root}`。这些规则是 AI 可读取的软约束与人工审计依据，不是操作系统硬隔离，也不代表已开启全盘写入监控。
 
 - 开始任务先读最近的 AGENTS.md、项目 README 和本文件。现有用户规则保持有效；更近的项目约定优先。
-- 使用曜核 MCP 时先读取 submission_schema 和 memory_search；完成任务优先使用 report_submit 提交分类报告与 memory_candidates。稳定约定、关键决策和可复用结论进入候选，无长期价值则用空数组；候选由用户审核，报告本身不会自动成为已批准记忆。
+- 使用曜核 MCP 时先读取 submission_schema；领取任务后调用 context_bootstrap，再以返回的 bundle_id/bundle_sha256 调用 context_ack。断线重连、规则/记忆变化或收据过期须重新读取；部分上下文须按来源补读。收据只代表客户端确认收到，不证明模型理解或遵守。memory_search 可补充查询已批准记忆；完成任务优先使用 report_submit 提交分类报告与 memory_candidates。稳定约定、关键决策和可复用结论进入候选，无长期价值则用空数组；候选由用户审核，报告本身不会自动成为已批准记忆。
 - 本任务创建的临时页面、服务和目录用 resource_register 登记精确身份与归属；完成或交接前仅处理自己的独占临时资源，并用 resource_cleanup_report 上报带时间的检查结果。无法检查或控制时标记待人工处理，不关闭其他任务、共享或用户窗口。
 - 软件与运行环境进 10_Apps；模型进 20_Models；素材进 30_Assets；创作项目进 40_Projects；训练项目进 50_Training/Projects。
 - 工作流进 60_Workflows；通用工具出图落地区为 70_Output；可复用知识进 80_Knowledge；归档进 90_Archive；管理记录进 00_Management。

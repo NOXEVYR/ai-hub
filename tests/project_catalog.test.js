@@ -28,6 +28,22 @@ test('formal projects are default, with all-directory category counts and no rep
   assert.match(h.key('cards').innerHTML,/不会自动登记项目/);assert.match(h.key('cards').innerHTML,/前往项目登记/);
 });
 
+test('project classifications and tool history entry appear while the catalog is loading',async()=>{
+  let finish;
+  const h=harness(url=>url==='/api/harnesses'?{items:[]}:new Promise(resolve=>{finish=resolve;}));
+  const mounted=[];
+  const page=ui.createProjects({...h.env,showToolNavigation:host=>mounted.push(host)});
+  const loading=page(h.el);
+  assert.deepEqual(mounted,[h.key('traces')]);
+  assert.match(h.key('kinds').innerHTML,/已登记项目/);
+  assert.match(h.key('kinds').innerHTML,/项目模板/);
+  assert.doesNotMatch(h.key('kinds').innerHTML,/<span>0/);
+  finish(data);
+  await loading;
+  await page(h.el,new URLSearchParams({view:'registry'}));
+  assert.equal(mounted.length,2);
+});
+
 test('rows retain provenance, expose only recorded associations and escape metadata',()=>{
   const candidate=ui.projectCards([{...project,entry_kind:'candidate',document_count:0,name:'<img src=x>',tool:'陌生工具',linked_tools:['虚假协作'],task_count:9}],{kind:'candidate'});
   assert.match(candidate,/未收录资料/);assert.match(candidate,/不代表目录为空/);assert.match(candidate,/目录发现 · 未登记/);

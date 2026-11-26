@@ -16,7 +16,7 @@ import stat
 import threading
 import time
 
-from . import config, management, collaboration_maintenance as maintenance, collaboration
+from . import config, management, collaboration_maintenance as maintenance, collaboration, workcenter_index
 
 CATEGORIES = collaboration.CATEGORIES
 CLASSIFICATIONS = {'classified': '已分类', 'needs_review': '待确认'}
@@ -245,7 +245,7 @@ def removal_restore(cfg, body):
                 'note': '已解除列表隐藏；文档仍须属于当前允许的收录来源，已移除任务或产物须分别恢复。'}
 
 
-def _path_status(path, boundary):
+def _path_status(path, boundary, checked_parents=None):
     """Validate lexical spelling before link resolution; missing files remain visible."""
     try:
         raw = os.fspath(path)
@@ -255,7 +255,15 @@ def _path_status(path, boundary):
             return 'rejected'
         if any(ord(char) < 32 for char in raw) or (os.name == 'nt' and ':' in raw[2:]):
             return 'rejected'
-        config._check_ancestors(os.path.dirname(raw))
+        parent = os.path.dirname(raw)
+        parent_key = config._key(parent)
+        # A metadata listing may reuse a successful parent check only within
+        # this one catalog build. The leaf is always checked independently.
+        # Action lookups never supply this set and retain full validation.
+        if checked_parents is None or parent_key not in checked_parents:
+            config._check_ancestors(parent)
+            if checked_parents is not None:
+                checked_parents.add(parent_key)
         info = os.lstat(raw)
         if config._is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             return 'rejected'
@@ -383,9 +391,13 @@ def _project_for(path, source, project_index, root):
     return {'path': str(base), 'name': source['label'], 'origin': 'source'}
 
 
-def _catalog(cfg, include_removed=False):
+def _catalog(cfg, include_removed=False, *, metadata_only=False, target_path=None):
+    # Never retain path-validation evidence between requests, workspaces or
+    # actions. Listings are metadata snapshots, not authorization to read.
+    checked_parents = set() if metadata_only else None
     root = _workspace(cfg)
     root_key = config._key(root)
+    target_key = config._key(target_path) if target_path is not None else None
     managed_projects = management.projects(cfg)
     projects = [{**p, 'origin': 'registered' if p.get('registered') else 'discovered'}
                 for p in managed_projects['items']
@@ -400,8 +412,15 @@ def _catalog(cfg, include_removed=False):
                 revoked_source_paths = [r['path'] for r in con.execute(
                     'SELECT path FROM sources WHERE root=? AND deleted_at IS NOT NULL', (root_key,))]
             source_rows = [dict(r) for r in con.execute('SELECT * FROM sources WHERE root=?' + source_filter + ' ORDER BY created_at,id', (root_key,))]
-            indexed = [dict(r) for r in con.execute(
-                'SELECT i.*,s.path AS source_path,s.label,s.tool FROM inventory i JOIN sources s ON s.id=i.source_id WHERE s.root=?' + source_filter.replace('deleted_at', 's.deleted_at') + ' ORDER BY s.created_at,s.id,i.path', (root_key,))]
+            inventory_query = ('SELECT i.*,s.path AS source_path,s.label,s.tool FROM inventory i '
+                               'JOIN sources s ON s.id=i.source_id WHERE s.root=?' +
+                               source_filter.replace('deleted_at', 's.deleted_at'))
+            args = [root_key]
+            if target_key is not None:
+                con.create_function('workcenter_path_key', 1, config._key)
+                inventory_query += ' AND workcenter_path_key(i.path)=?'
+                args.append(target_key)
+            indexed = [dict(r) for r in con.execute(inventory_query + ' ORDER BY s.created_at,s.id,i.path', args)]
         else:
             indexed = []
     counts, excluded = collections.Counter(), collections.Counter()
@@ -457,6 +476,8 @@ def _catalog(cfg, include_removed=False):
     legacy_reports = management.reports(cfg, config.REPORTS_DIR, diagnostics=legacy_diagnostics)
     for entry in legacy_reports:
         path = Path(entry['path'])
+        if target_key is not None and config._key(path) != target_key:
+            continue
         if path.suffix.casefold() not in maintenance.TEXT_EXTENSIONS:
             continue
         # Revoking an explicit source must also stop implicit rediscovery of
@@ -499,6 +520,8 @@ def _catalog(cfg, include_removed=False):
                         'SELECT id,name,tool FROM clients WHERE root=?', (root_key,))}
             for raw in artifacts:
                 entry = dict(raw)
+                if target_key is not None and config._key(entry['path']) != target_key:
+                    continue
                 if entry.get('deleted_at') or entry['_task_deleted_at']:
                     blocked_paths.add(config._key(entry['path']))
                     continue
@@ -532,7 +555,7 @@ def _catalog(cfg, include_removed=False):
                 rows.append((entry, {'path': str(boundary), 'label': '协作产物登记', 'tool': entry.get('source_tool') or 'any'}, 'registered', entry['kind']))
     documents = {}
     project_index = _project_index([project for project in projects if project['origin'] != 'source'])
-    project_kinds = {key: _project_kind(project, root)[0] for key, project in project_index.items()}
+    project_kinds = {}
     ranks = {'legacy': 0, 'indexed': 1, 'registered': 2}
     for entry, source, intake, kind in rows:
         path = entry['path']
@@ -548,7 +571,7 @@ def _catalog(cfg, include_removed=False):
                'project_name': project['name'], 'project_path': project['path'], 'project_origin': project['origin'],
                'project_kind': project_kinds[project_key],
                'tool': source.get('tool', 'any'), 'category': _category(os.path.relpath(path, source['path']), kind), 'intake_status': intake,
-               'status': 'rejected' if source.get('_invalid') else _path_status(path, source['path']), 'size': entry.get('size', 0),
+               'status': 'rejected' if source.get('_invalid') else _path_status(path, source['path'], checked_parents), 'size': entry.get('size', 0),
                'mtime': entry.get('mtime', 0), 'source_labels': [source['label']], '_boundary': source['path'], '_invalid': source.get('_invalid', False)}
         doc['_source_identity'] = source.get('identity')
         submitted = entry.get('category') if intake == 'registered' else None
@@ -695,26 +718,21 @@ def _facets(documents):
 def list_documents(cfg, params=None):
     params = params or {}
     page, page_size = _pagination(params)
-    root, documents, _, coverage = _catalog(cfg)
+    _filtered([], params)
+    result = workcenter_index.listing(cfg, 'documents', params, page, page_size)
+    if result is not None:
+        return result
+    root, documents, discovered, coverage = _catalog(cfg, metadata_only=True)
+    workcenter_index.observe_size(root, documents, discovered)
     selected = _filtered(documents, params)
     selected.sort(key=lambda d: (-(d['mtime'] or 0), d['path'].casefold(), d['id']))
     start = (page - 1) * page_size
     return {'items': [_public(d) for d in selected[start:start + page_size]], 'total': len(selected),
             'page': page, 'page_size': page_size, 'workspace_root': root,
-            'facets': _facets(documents), 'coverage': coverage}
+            'facets': _facets(documents), 'coverage': coverage, 'index': workcenter_index.live_status()}
 
 
-def list_projects(cfg, params=None):
-    params = params or {}
-    page, page_size = _pagination(params)
-    root, documents, discovered, coverage = _catalog(cfg)
-    # Validate document filters even when this workspace has no documents.
-    _filtered([], params)
-    kind = params.get('entry_kind', 'all' if params.get('project_id') else 'project')
-    if not isinstance(kind, str) or kind not in {'project', 'candidate', 'template', 'source', 'all'}:
-        raise ValueError('项目目录分类不受支持。')
-    if params.get('source_type') is not None and not isinstance(params['source_type'], str):
-        raise ValueError('来源类型格式不正确。')
+def _group_projects(root, documents, discovered):
     _, names = _overrides(config._key(root))
     candidates = list(discovered)
     candidates.extend({'path': doc['project_path'], 'name': doc['project_name'],
@@ -733,7 +751,7 @@ def list_projects(cfg, params=None):
             'status': project.get('_source_status', 'unscanned'), 'representative_document_id': None,
             'source_types': set(), 'linked_tools': set(), 'task_count': 0, 'task_status_counts': collections.Counter(),
             'tasks': [], 'task_summary_limit': TASK_SUMMARY_LIMIT,
-            '_task_ids': set(), '_task_search': [], '_artifact_ids': set(),
+            '_task_ids': set(), '_task_search': [], '_artifact_ids': set(), '_artifact_tools': set(),
             'association_evidence': 'registered_tasks_and_artifacts_only'}
     for project in candidates:
         p = grouped[_identifier(root, project['path'], 'project')]
@@ -744,6 +762,7 @@ def list_projects(cfg, params=None):
             p['_artifact_ids'].add(artifact['id'])
             if artifact.get('source_tool') and artifact['source_tool'] != 'any':
                 p['linked_tools'].add(artifact['source_tool'])
+                p['_artifact_tools'].add(artifact['source_tool'])
         if project.get('_task'):
             task = project['_task']
             p['task_count'] += 1
@@ -770,6 +789,7 @@ def list_projects(cfg, params=None):
             p['_artifact_ids'].add(doc['artifact_id'])
             if doc.get('source_tool') and doc['source_tool'] != 'any':
                 p['linked_tools'].add(doc['source_tool'])
+                p['_artifact_tools'].add(doc['source_tool'])
     for p in grouped.values():
         p['source_types'] = sorted(p['source_types'] or {'any'})
         p['linked_tools'] = sorted(p['linked_tools'])
@@ -782,6 +802,24 @@ def list_projects(cfg, params=None):
     facets = {'entry_kinds': [{'value': key, 'label': PROJECT_KINDS['registered' if key == 'project' else key], 'count': count}
                               for key, count in counts.items()],
               'source_types': [{'value': key, 'label': key, 'count': count} for key, count in sorted(type_counts.items())]}
+    return grouped, project_docs, counts, facets
+
+
+def list_projects(cfg, params=None):
+    params = params or {}
+    page, page_size = _pagination(params)
+    _filtered([], params)
+    kind = params.get('entry_kind', 'all' if params.get('project_id') else 'project')
+    if not isinstance(kind, str) or kind not in {'project', 'candidate', 'template', 'source', 'all'}:
+        raise ValueError('项目目录分类不受支持。')
+    if params.get('source_type') is not None and not isinstance(params['source_type'], str):
+        raise ValueError('来源类型格式不正确。')
+    cached = workcenter_index.listing(cfg, 'projects', params, page, page_size)
+    if cached is not None:
+        return cached
+    root, documents, discovered, coverage = _catalog(cfg, metadata_only=True)
+    workcenter_index.observe_size(root, documents, discovered)
+    grouped, project_docs, counts, facets = _group_projects(root, documents, discovered)
     # Match a project's own metadata or ANY matching document, without shrinking
     # the summary to a filtered report subset. Empty folders remain searchable.
     document_keys = ('category', 'intake_status', 'classification_status', 'task_id', 'source_client_id')
@@ -811,13 +849,46 @@ def list_projects(cfg, params=None):
     start = (page - 1) * page_size
     return {'items': [_public(p) for p in result[start:start + page_size]], 'total': len(result), 'page': page,
             'page_size': page_size, 'workspace_root': root, 'coverage': coverage,
-            'entry_kind': kind, 'catalog_total': len(grouped), 'counts': counts, 'facets': facets}
+            'entry_kind': kind, 'catalog_total': len(grouped), 'counts': counts, 'facets': facets,
+            'index': workcenter_index.live_status()}
 
 
-def _lookup(cfg, document_id):
+def warm_index(cfg):
+    return workcenter_index.ready(cfg)
+
+
+def index_ready(cfg):
+    return workcenter_index.ready(cfg)
+
+
+def lookup_indexed_project(cfg, project):
+    """Find exact project references for a handoff, including ambiguous names."""
+    if not isinstance(project, str) or not project.strip() or len(project) > 2048:
+        return []
+    project = project.strip()
+    cached = workcenter_index.lookup(cfg, project)
+    if cached is not None:
+        return cached
+    root, documents, discovered, _ = _catalog(cfg, metadata_only=True)
+    workcenter_index.observe_size(root, documents, discovered)
+    grouped, _, _, _ = _group_projects(root, documents, discovered)
+    key = project.casefold()
+    path_key = config._key(project) if os.path.isabs(project) else None
+    matches = [p for p in grouped.values() if (p['entry_kind'] == 'project' or p['task_count'])
+               and (key in (p['id'].casefold(), p['name'].casefold(), Path(p['path']).name.casefold())
+                    or path_key == config._key(p['path']))]
+    return [_public(p) for p in sorted(matches, key=lambda p: (p['name'].casefold(), p['id']))[:12]]
+
+
+def _lookup(cfg, document_id, path_hint=None):
     if not isinstance(document_id, str) or not re.fullmatch(r'doc_[0-9a-f]{32}', document_id):
         raise ValueError('文档 ID 格式不正确。')
-    _, documents, _, _ = _catalog(cfg)
+    if path_hint is None:
+        path_hint = workcenter_index.document_path_hint(cfg, document_id)
+    if path_hint and _identifier(_workspace(cfg), path_hint) == document_id:
+        _, documents, _, _ = _catalog(cfg, target_path=path_hint)
+    else:
+        _, documents, _, _ = _catalog(cfg)
     for doc in documents:
         if doc['id'] == document_id:
             return doc
@@ -827,7 +898,7 @@ def _lookup(cfg, document_id):
 def lookup_document(cfg, path):
     if not isinstance(path, str) or not os.path.isabs(path) or '..' in path.replace('\\', '/').split('/'):
         raise ValueError('文档路径不合法。')
-    doc = _lookup(cfg, _identifier(_workspace(cfg), path))
+    doc = _lookup(cfg, _identifier(_workspace(cfg), path), path_hint=path)
     return _public(doc)
 
 

@@ -17,7 +17,7 @@ function context(extra={}){
 
 test('resource navigation has one model/material entrance and preserves action IDs and module order',()=>{
   const routes=[...index.matchAll(/data-page="([^"]+)"/g)].map(m=>m[1]);
-  const expected=['overview','models','assets','workflows','projects','reports','capabilities','collaboration','workspace','files','organizer','settings'];
+  const expected=['overview','models','assets','workflows','projects','reports','traces','capabilities','collaboration','workspace','files','lifecycle','organizer','settings'];
   assert.deepEqual(routes,expected);assert.equal(new Set(routes).size,routes.length);
   for(const id of ['app','sidebar','nav','sidebar-status','main','topbar','menu-toggle','nav-back','nav-back-label','page-title','jobbar','global-search','btn-check-updates','btn-rescan','page','drawer','drawer-mask','lightbox','modal-mask','modal','toast'])assert.equal([...index.matchAll(new RegExp(`id="${id}"`,'g'))].length,1,id);
   assert(index.indexOf('lumacore.css')>index.indexOf('collaboration.css'));

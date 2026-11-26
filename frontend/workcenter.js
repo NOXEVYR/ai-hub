@@ -79,7 +79,7 @@
       const sources=rows(p.source_types).map(t=>typeof t==='string'?t:t.label||t.value).filter(Boolean),sourceLabel=p.source_type_label||sources.map(t=>toolNames[t]||t).join(' / ')||toolNames[p.source_type]||p.source_type||'来源待确认';
       const association=registered?`${linked.length?esc(linked.map(t=>toolNames[t]||t).join(' / ')):'尚无关联工具证据'}<small>${projectCount(p.task_count)} 个任务 · ${projectCount(p.artifact_count)} 份提交成果</small>`:'<span class="wc-project-unconfirmed">'+(entryKind==='candidate'?'目录发现 · 未登记':entryKind==='template'?'创建参考 · 未登记':'来源范围 · 不代表项目')+'</span>';
       const sourceSummary=sourceLabel+(p.status?' · '+(statusNames[p.status]||p.status):'');
-      return `<tr><td><strong class="wc-project-name" title="${esc(p.name||'未命名条目')}">${esc(p.name||'未命名条目')}</strong><span class="file-sub pathline wc-project-path" title="${esc(p.path||'')}">${esc(projectDisplayPath(p.path,workspaceRoot)||'未提供目录位置')}</span>${p.description?`<span class="file-sub wc-project-description" title="${esc(p.description)}">${esc(p.description)}</span>`:''}</td><td><span class="badge">${esc(registered&&p.registration_status==='created'?'已有创建记录':projectKinds[entryKind])}</span><span class="file-sub wc-project-source" title="${esc(sourceSummary)}">${esc(sourceSummary)}</span></td><td>${docs?`<strong>${docs} 份文档</strong><small>${projectCount(p.report_count)} 份报告</small>`:'<span class="wc-project-unconfirmed">未收录资料</span><small>不代表目录为空</small>'}</td><td>${association}</td><td><div class="wc-project-row-actions">${docs&&p.id?`<button class="btn small" data-wc-project="${esc(p.id)}" title="查看项目已收录资料">资料</button>`:''}${p.representative_document_id?`<button class="btn small ghost" data-wc-project-reveal="${esc(p.representative_document_id)}" data-wc-document="${esc(p.representative_document_id)}" title="打开已收录资料所在文件夹">定位</button>`:''}${p.path?`<button class="btn small ghost" data-wc-project-copy="${esc(p.path)}">复制路径</button>`:''}${!registered?'<a class="btn small ghost" href="#/projects?view=registry">前往登记</a>':''}</div></td></tr>`;
+      return `<tr><td><strong class="wc-project-name" title="${esc(p.name||'未命名条目')}">${esc(p.name||'未命名条目')}</strong><span class="file-sub pathline wc-project-path" title="${esc(p.path||'')}">${esc(projectDisplayPath(p.path,workspaceRoot)||'未提供目录位置')}</span>${p.description?`<span class="file-sub wc-project-description" title="${esc(p.description)}">${esc(p.description)}</span>`:''}</td><td><span class="badge">${esc(registered&&p.registration_status==='created'?'已有创建记录':projectKinds[entryKind])}</span><span class="file-sub wc-project-source" title="${esc(sourceSummary)}">${esc(sourceSummary)}</span></td><td>${docs?`<strong>${docs} 份文档</strong><small>${projectCount(p.report_count)} 份报告</small>`:'<span class="wc-project-unconfirmed">未收录资料</span><small>不代表目录为空</small>'}</td><td>${association}</td><td><div class="wc-project-row-actions">${(registered||p.task_count>0)&&p.id?`<button class="btn small" data-wc-continue="${esc(p.id)}">继续这个项目</button>`:''}${docs&&p.id?`<button class="btn small" data-wc-project="${esc(p.id)}" title="查看项目已收录资料">资料</button>`:''}${p.representative_document_id?`<button class="btn small ghost" data-wc-project-reveal="${esc(p.representative_document_id)}" data-wc-document="${esc(p.representative_document_id)}" title="打开已收录资料所在文件夹">定位</button>`:''}${p.path?`<button class="btn small ghost" data-wc-project-copy="${esc(p.path)}">复制路径</button>`:''}${!registered?'<a class="btn small ghost" href="#/projects?view=registry">前往登记</a>':''}</div></td></tr>`;
     }).join('')}</tbody></table></div>`;
   }
   function createReports({api,heading,copyPath,registerKnowledge,generateReport,openModal,closeModal}){
@@ -143,7 +143,7 @@
           const data=await api('/api/workcenter/document?'+new URLSearchParams(id?{id}:{path}));if(!active()||serial!==readSerial)return;
           state.selected=data.id||id;el.dataset.wcSelected=state.selected;
           const item={...(state.items.find(d=>String(d.id)===String(state.selected))||{}),...data},c=classification(item);
-          get('reader').innerHTML=`<div class="panel-head"><h3>${esc(data.title || item.title)}</h3><button id="wc-close-reader" class="btn small ghost" type="button">关闭阅读</button></div><div class="body"><div class="wc-actions"><button id="wc-reveal" class="btn small">打开所在文件夹</button><button id="wc-copy" class="btn small ghost">复制路径</button><button id="wc-remove" class="btn small ghost" type="button">移出列表</button></div><div class="wc-reader-summary"><p class="wc-summary-project"><strong>${esc(item.project_name || '未归属项目')}</strong><span>任务：${esc(item.task_title || (item.task_id?'任务标题未记录':'未关联任务'))}</span></p><p><span>提交客户端：${esc(submitterDescription(item,duplicateSubmitters(state.items)))}</span><span>${esc(item.source_client_id?toolName(item.source_tool || item.tool):'来源工具：'+toolName(item.tool))}</span></p><p><span>${esc(categories[item.category] || '类别待确认')}</span><span class="${c.status==='needs_review'?'wc-needs-review':''}">${esc(c.label)}${c.status==='needs_review'?' · 待确认':c.source==='submitted'?' · 未人工核验':''}</span></p><p><span class="wc-summary-label">保留状态</span><span>${esc(retentionDescription(item))}</span></p></div><details class="wc-file-info"><summary>文件位置与提交信息</summary><dl class="wc-detail-meta"><dt>文档位置</dt><dd>${esc(data.path || item.path)}</dd><dt>项目 / 来源工具</dt><dd>${esc(item.project_name || '未归属项目')} · ${esc(tools[item.tool] || item.tool || '来源待确认')}</dd><dt>文档用途 / 分类依据</dt><dd>${esc(categories[item.category] || '类别待确认')} · ${esc(c.label)}${c.status==='needs_review'?' · 待确认':c.source==='submitted'?' · 未人工核验':''}</dd><dt>收录方式 / 保留状态</dt><dd>${esc(intake[item.intake_status] || '已收录文档')} · ${esc(retentionDescription(item))}</dd><dt>当前任务承接</dt><dd>${esc(item.task_id?taskAssignment(item):'未关联任务，不推测负责人')}</dd><dt>提交客户端 ID</dt><dd>${esc(item.source_client_id || '未记录')}<span class="file-sub">显示名为当前登记的自报名称，可更改；不代表提交时姓名快照或已核验的真人身份。实际提交 ID 与当前任务领取者独立。</span></dd><dt>当前领取客户端 ID</dt><dd>${esc(item.task_status==='active'&&item.task_owner_id?item.task_owner_id:'无当前领取记录')}</dd><dt>提交与归属</dt><dd>${item.task_id?'任务 '+esc(item.task_id)+' · ':''}${item.artifact_id?'产物 '+esc(item.artifact_id)+' · ':''}${esc(item.project_origin==='inferred'?'项目按目录推测，待确认':'仅改变索引分类，不移动文件')}</dd></dl></details>${data.preview_supported?`<pre class="wc-text">${esc(data.content)}</pre>${data.truncated?'<p class="warning-note">正文过长，仅显示受控预览片段；原文件保持完整。</p>':''}`:`<p class="wc-empty">${esc(data.reason || '当前格式不支持文本预览。可打开所在文件夹，在本机应用中阅读。')}</p>`}<details class="wc-classify"><summary>校正文档类别与项目显示名称</summary><form id="wc-classify-form" data-app-draft-scope="wc-classify-form"><label class="wc-field">文档类别<select id="wc-edit-category" aria-label="文档类别">${categoryOptions(item.category || 'other_text')}</select></label><label class="wc-field">项目显示名称<input id="wc-edit-project" aria-label="项目显示名称" value="${esc(item.project_name || '')}" maxlength="200"></label><p class="caption-note wide">只保存管理索引中的分类和名称，不修改正文、目录位置或原工具记忆。</p><button class="btn small primary wide" id="wc-save-classification">保存分类</button></form></details></div>`;
+          get('reader').innerHTML=`<div class="panel-head"><h3>${esc(data.title || item.title)}</h3><button id="wc-close-reader" class="btn small ghost" type="button">关闭阅读</button></div><div class="body"><div class="wc-actions"><button id="wc-reveal" class="btn small">打开所在文件夹</button><button id="wc-copy" class="btn small ghost">复制路径</button><a class="btn small ghost" href="#/traces?file_exact=${esc(encodeURIComponent(data.path || item.path))}">反查关联会话</a><button id="wc-remove" class="btn small ghost" type="button">移出列表</button></div><div class="wc-reader-summary"><p class="wc-summary-project"><strong>${esc(item.project_name || '未归属项目')}</strong><span>任务：${esc(item.task_title || (item.task_id?'任务标题未记录':'未关联任务'))}</span></p><p><span>提交客户端：${esc(submitterDescription(item,duplicateSubmitters(state.items)))}</span><span>${esc(item.source_client_id?toolName(item.source_tool || item.tool):'来源工具：'+toolName(item.tool))}</span></p><p><span>${esc(categories[item.category] || '类别待确认')}</span><span class="${c.status==='needs_review'?'wc-needs-review':''}">${esc(c.label)}${c.status==='needs_review'?' · 待确认':c.source==='submitted'?' · 未人工核验':''}</span></p><p><span class="wc-summary-label">保留状态</span><span>${esc(retentionDescription(item))}</span></p></div><details class="wc-file-info"><summary>文件位置与提交信息</summary><dl class="wc-detail-meta"><dt>文档位置</dt><dd>${esc(data.path || item.path)}</dd><dt>项目 / 来源工具</dt><dd>${esc(item.project_name || '未归属项目')} · ${esc(tools[item.tool] || item.tool || '来源待确认')}</dd><dt>文档用途 / 分类依据</dt><dd>${esc(categories[item.category] || '类别待确认')} · ${esc(c.label)}${c.status==='needs_review'?' · 待确认':c.source==='submitted'?' · 未人工核验':''}</dd><dt>收录方式 / 保留状态</dt><dd>${esc(intake[item.intake_status] || '已收录文档')} · ${esc(retentionDescription(item))}</dd><dt>当前任务承接</dt><dd>${esc(item.task_id?taskAssignment(item):'未关联任务，不推测负责人')}</dd><dt>提交客户端 ID</dt><dd>${esc(item.source_client_id || '未记录')}<span class="file-sub">显示名为当前登记的自报名称，可更改；不代表提交时姓名快照或已核验的真人身份。实际提交 ID 与当前任务领取者独立。</span></dd><dt>当前领取客户端 ID</dt><dd>${esc(item.task_status==='active'&&item.task_owner_id?item.task_owner_id:'无当前领取记录')}</dd><dt>提交与归属</dt><dd>${item.task_id?'任务 '+esc(item.task_id)+' · ':''}${item.artifact_id?'产物 '+esc(item.artifact_id)+' · ':''}${esc(item.project_origin==='inferred'?'项目按目录推测，待确认':'仅改变索引分类，不移动文件')}</dd></dl></details>${data.preview_supported?`<pre class="wc-text">${esc(data.content)}</pre>${data.truncated?'<p class="warning-note">正文过长，仅显示受控预览片段；原文件保持完整。</p>':''}`:`<p class="wc-empty">${esc(data.reason || '当前格式不支持文本预览。可打开所在文件夹，在本机应用中阅读。')}</p>`}<details class="wc-classify"><summary>校正文档类别与项目显示名称</summary><form id="wc-classify-form" data-app-draft-scope="wc-classify-form"><label class="wc-field">文档类别<select id="wc-edit-category" aria-label="文档类别">${categoryOptions(item.category || 'other_text')}</select></label><label class="wc-field">项目显示名称<input id="wc-edit-project" aria-label="项目显示名称" value="${esc(item.project_name || '')}" maxlength="200"></label><p class="caption-note wide">只保存管理索引中的分类和名称，不修改正文、目录位置或原工具记忆。</p><button class="btn small primary wide" id="wc-save-classification">保存分类</button></form></details></div>`;
           get('close-reader').onclick=closeReader;
           if(drafts[state.selected]){get('edit-category').value=drafts[state.selected].category;get('edit-project').value=drafts[state.selected].project_name;}el.dataset.wcReaderReady='true';
           if(restored?.classification?.document_id===state.selected){get('edit-category').value=restored.classification.category || item.category || 'other_text';get('edit-project').value=restored.classification.project_name || '';restored={...restored,classification:null};}
@@ -159,13 +159,14 @@
           el.querySelectorAll('[data-wc-document]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.wcDocument===String(state.selected))));
         }catch(e){if(active()&&serial===readSerial){get('reader').innerHTML=`<div class="panel-head"><h3>文档暂不可读</h3><button id="wc-close-reader" class="btn small ghost" type="button">关闭阅读</button></div><div class="wc-empty">${esc(e.message)}</div>`;get('close-reader').onclick=closeReader;error(e);}}
       }
-      async function load(){
+      async function load(force=false){
         const serial=++listSerial;error('');get('refresh').disabled=true;get('count').textContent='正在读取文档…';
         const query=new URLSearchParams({...Object.fromEntries(['query','project_id','tool','category','intake_status','classification_status','task_id','source_client_id'].map(k=>[k,state[k]])),page:String(state.page),page_size:'30'});
+        if(force)query.set('refresh','1');
         try{const [data,registry]=await Promise.all([api('/api/workcenter/documents?'+query),api('/api/harnesses')]);if(!active()||serial!==listSerial)return;const harnesses=rows(registry?.items);for(const tool of harnesses)tools[tool.id]=(tool.name||tool.id)+(tool.enabled===false?'（已停用）':'');
           state.items=rows(data);state.total=Number(data.total)||0;const nextRoot=data.root||data.workspace_root||state.root;if(state.root&&state.root!==nextRoot){++removedSerial;removedPage=1;get('removed-panel').hidden=true;get('removed-list').innerHTML='';get('removed-toggle').setAttribute('aria-expanded','false');if(removalDialog){removalDialog.closed=true;removalDialog=null;closeModal?.();}state.selected='';el.dataset.wcSelected='';++readSerial;restored=null;el.dataset.wcReaderReady='false';Object.keys(drafts).forEach(k=>delete drafts[k]);Object.keys(groups).forEach(k=>delete groups[k]);get('reader').hidden=true;get('reader').innerHTML='';get('layout').classList?.remove('is-reading');error('工作环境已切换，已清除旧文档选择，筛选文字保留。');}state.root=nextRoot;el.dataset.wcRoot=state.root;state.page=Number(data.page)||state.page;el.dataset.wcPage=String(state.page);
           state.facets=data.facets || {};get('tools').innerHTML='<button class="btn small" type="button" data-wc-tool="">全部来源</button>'+[...new Set([...harnesses.map(t=>t.id),...rows(state.facets.tools).map(t=>t.value)])].filter(Boolean).map(t=>`<button class="btn small" type="button" data-wc-tool="${esc(t)}">${esc(tools[t]||t)} 文档</button>`).join('');bindTools();get('project').innerHTML='<option value="">全部项目</option>'+rows(state.facets.projects).map(p=>`<option value="${esc(p.value)}">${esc(p.label)} (${esc(p.count ?? 0)})</option>`).join('');get('project').value=state.project_id;for(const [id,key,facet,label]of[['task','task_id','tasks','全部任务'],['submitter','source_client_id','submitters','全部提交客户端']]){get(id).innerHTML=`<option value="">${label}</option>`+rows(state.facets[facet]).map(f=>`<option value="${esc(f.value)}">${esc(f.label)} (${esc(f.count ?? 0)})</option>`).join('');get(id).value=state[key];}
-          get('coverage').innerHTML=coverageHTML(data.coverage);renderList();
+          get('coverage').innerHTML=indexStatus(data.index)+coverageHTML(data.coverage);renderList();
           const total=Number(data.total)||0,pages=Math.max(1,Math.ceil(total/(Number(data.page_size)||30)));
           get('count').textContent=`${total.toLocaleString()} 份文档 · ${tools[state.tool] || (state.tool?'其他来源':'全部来源')}`;
           get('page-info').textContent=`第 ${state.page} / ${pages} 页 · 本页 ${state.items.length} 份`;get('prev').disabled=state.page<=1;get('next').disabled=state.page>=pages;
@@ -177,50 +178,117 @@
       get('filter-form').onsubmit=e=>{e.preventDefault();if(mutating)return;for(const[id,key]of[['query','query'],['project','project_id'],['category','category'],['intake','intake_status'],['classification-status','classification_status'],['task','task_id'],['submitter','source_client_id']])state[key]=get(id).value.trim();state.page=1;return load();};
       function bindTools(){el.querySelectorAll('[data-wc-tool]').forEach(b=>b.onclick=()=>{if(mutating)return;state.tool=b.dataset.wcTool;state.page=1;markTools();return load();});}bindTools();
       get('prev').onclick=()=>{if(state.page>1&&!mutating){state.page--;return load();}};get('next').onclick=()=>{if(!get('next').disabled&&!mutating){state.page++;return load();}};
-      get('refresh').onclick=()=>!mutating&&load();get('reset').onclick=()=>{if(mutating)return;for(const key of['query','project_id','tool','category','intake_status','classification_status','task_id','source_client_id'])state[key]='';for(const id of['query','project','category','intake','classification-status','task','submitter'])get(id).value='';state.page=1;markTools();return load();};
+      get('refresh').onclick=()=>!mutating&&load(true);get('reset').onclick=()=>{if(mutating)return;for(const key of['query','project_id','tool','category','intake_status','classification_status','task_id','source_client_id'])state[key]='';for(const id of['query','project','category','intake','classification-status','task','submitter'])get(id).value='';state.page=1;markTools();return load();};
       markTools();await load();if(active()&&(state.selected||params.get('path')))await readDocument(state.selected,params.get('path'));
     };
   }
-  function createProjects({api,nav,legacyPage,copyPath}){
+  function indexStatus(index){
+    if(!index?.persistent||!index.built_at)return '';
+    const stamp=new Date(index.built_at*1000), when=Number.isNaN(stamp.getTime())?'':stamp.toLocaleString();
+    return '<p class="caption-note">目录索引更新于 '+esc(when)+(index.state==='refreshing'?' · 正在后台更新':'')+'</p>';
+  }
+  function resumeText(data){
+    const handoff=data.latest_handoff, last=data.last_completion;
+    const lines=[data.project.name, data.project.path, '', '下一步', data.next_step.text, '', '进行中和待领取任务'];
+    for(const task of data.tasks) lines.push([taskStatuses[task.status],task.title,task.id].join(' · '));
+    if(handoff) lines.push('', '最近交接 · '+handoff.title,handoff.summary);
+    if(last) lines.push('', '最近完成 · '+last.title,last.summary);
+    if(data.files.length) lines.push('', '相关文件',...data.files.map(file=>file.title+' — '+file.path));
+    return lines.join('\n');
+  }
+  async function showResume(host,params,{api,nav,copyPath,active}){
+    const project=params.get('resume'), expectedRoot=params.get('workspace');
+    const query=new URLSearchParams({project});
+    if(expectedRoot) query.set('_workspace_root',expectedRoot);
+    const status=message=>{host.innerHTML='<p class="caption-note" role="status">'+esc(message)+'</p>';};
+    try{
+      status('正在读取项目进度…');
+      let data=await api('/api/workcenter/project-resume?'+query);
+      while(active() && data.state==='building'){
+        status('正在准备项目索引，完成后自动显示进度…');
+        await new Promise(resolve=>setTimeout(resolve,3000));
+        if(!active()) return;
+        data=await api('/api/workcenter/project-resume?'+query);
+      }
+      if(!active()) return;
+      if(data.state==='ambiguous'){
+        host.innerHTML='<h3>选择同名项目</h3>'+rows(data.candidates).map(p=>'<p><button class="btn" data-resume-id="'+esc(p.id)+'">'+esc(p.name)+'</button> '+esc(p.path)+'</p>').join('');
+        host.querySelectorAll('[data-resume-id]').forEach(b=>b.onclick=()=>nav('projects',{resume:b.dataset.resumeId,workspace:data.workspace_root}));
+        return;
+      }
+      if(data.state!=='ready'){status('未找到这个项目，请返回项目目录核对名称。');return;}
+      const taskList=data.tasks.map(t=>'<li><strong>'+esc(t.title)+'</strong> · '+esc(taskStatuses[t.status]||t.status)+' · '+esc(t.owner||toolName(t.target_tool))+
+        '<small class="file-sub">'+esc(t.description||t.summary||'尚未填写说明')+'</small></li>').join('');
+      const fileList=data.files.map(f=>'<li><button type="button" class="btn small ghost" data-resume-doc="'+esc(f.id)+'">'+esc(f.title)+'</button>'+
+        '<small class="file-sub">'+esc(statusNames[f.status]||f.status)+' · '+esc(f.path)+'</small></li>').join('');
+      const note=(label,item)=>item?'<h3>'+label+'</h3><p>'+esc(item.title)+' · '+esc(item.created_at||item.updated_at||'')+'</p><pre class="wc-text">'+esc(item.summary||'尚未填写摘要')+'</pre>':'';
+      host.innerHTML='<section class="panel wc-resume"><div class="panel-head"><h2>'+esc(data.project.name)+'</h2><button type="button" class="btn small" id="wc-copy-handoff">复制交接摘要</button></div>'+
+        '<div class="body"><p class="file-sub">'+esc(data.project.path)+'</p><h3>下一步</h3><p>'+esc(data.next_step.text)+'</p>'+
+        '<h3>进行中和待领取任务（'+esc(data.open_task_count)+'）</h3>'+(taskList?'<ul>'+taskList+'</ul>':'<p>暂无任务。</p>')+
+        note('最近交接',data.latest_handoff)+note('最近完成',data.last_completion)+'<h3>相关文件</h3>'+
+        (fileList?'<ul>'+fileList+'</ul>':'<p>尚无收录文档。</p>')+
+        '<button type="button" class="btn small ghost" id="wc-resume-all">查看项目全部资料（'+esc(data.document_count)+'）</button> <a class="btn small ghost" href="#/traces?q='+esc(encodeURIComponent(data.project.path))+'">查询项目目录相关会话</a><p role="status" id="wc-resume-status"></p></div></section>';
+      host.querySelector('#wc-copy-handoff').onclick=async()=>{
+        try{await navigator.clipboard.writeText(resumeText(data));if(active()) host.querySelector('#wc-resume-status').textContent='已复制交接摘要。';}
+        catch(error){if(active()) host.querySelector('#wc-resume-status').textContent=error.message;}
+      };
+      host.querySelector('#wc-resume-all').onclick=()=>nav('reports',{project_id:data.project.id});
+      host.querySelectorAll('[data-resume-doc]').forEach(b=>b.onclick=()=>nav('reports',{project_id:data.project.id,document_id:b.dataset.resumeDoc}));
+    }catch(error){if(active()) status('项目进度读取失败。'+error.message);}
+  }
+  function createProjects({api,nav,legacyPage,copyPath,showToolNavigation}){
     let generation=0;
     return async(el,params=new URLSearchParams(),restored)=>{
       const run=++generation,active=()=>el.isConnected&&generation===run,legacy=params.get('view')==='registry';el.classList?.add('workcenter-page');el.dataset.wcView=legacy?'registry':'documents';
       if(!legacy)el.classList?.add('wc-project-page');else el.classList?.remove?.('wc-project-page');
-      el.innerHTML='<div class="wc-section-switch"><a class="btn '+(!legacy?'primary':'')+'" href="#/projects">项目目录</a><a class="btn '+(legacy?'primary':'')+'" href="#/projects?view=registry">项目与运行登记</a></div><div id="wc-project-content"></div>';
+      const showHistory=(legacy||!params.get('resume'))&&showToolNavigation;
+      el.innerHTML='<div class="wc-section-switch"><a class="btn '+(!legacy?'primary':'')+'" href="#/projects">项目目录</a><a class="btn '+(legacy?'primary':'')+'" href="#/projects?view=registry">项目与运行登记</a></div>'+
+        (showHistory?'<div id="wc-project-traces"></div>':'')+'<div id="wc-project-content"></div>';
+      if(showHistory)showToolNavigation(el.querySelector('#wc-project-traces'),api);
       const host=el.querySelector('#wc-project-content');
       if(legacy)return legacyPage(host,params,restored?.legacy || restored);
+      if(params.get('resume'))return showResume(host,params,{api,nav,copyPath,active});
       const requested=restored?.kind??params.get('kind')??'registered',state={kind:Object.hasOwn(projectKinds,requested)?requested:'registered',query:restored?.query??params.get('q')??params.get('query')??'',source_type:restored?.source_type??params.get('source_type')??'',page:Math.max(1,Number(restored?.page??params.get('page'))||1)};
       const get=id=>host.querySelector('#wc-project-'+id);
       el.dataset.wcProjectKind=state.kind;el.dataset.wcPage=String(state.page);
-      host.innerHTML='<p class="wc-project-intro">项目目录保留原位置。正式项目依据登记展示；目录候选、模板与资料来源分别查找。</p><div id="wc-project-error" class="wc-error" role="alert"></div><div id="wc-project-message" role="status" aria-live="polite"></div><div id="wc-project-kinds" class="wc-project-kinds" role="group" aria-label="目录类别"></div><form id="wc-project-filter" class="wc-project-filter"><label>查找条目<input id="wc-project-query" type="search" maxlength="500" placeholder="名称、目录或已收录文档" aria-label="查找项目目录"></label><label>来源类型<select id="wc-project-source" aria-label="项目目录来源类型"><option value="">全部来源类型</option></select></label><button class="btn primary" type="submit">查找</button><button id="wc-project-reset" class="btn ghost" type="button">清除筛选</button></form><div class="wc-project-listbar"><span id="wc-project-count" role="status">正在读取目录…</span><a class="btn small ghost" href="#/projects?view=registry">登记项目</a></div><p id="wc-project-scope" class="caption-note">关联工具、任务和成果仅列已登记项目的任务及提交记录，不推测目录作者或跨工具协作状态。</p><div id="wc-project-coverage"></div><section class="panel wc-project-catalog" aria-label="项目目录结果"><div id="wc-project-cards"></div><div id="wc-project-pager" class="wc-pager"></div></section>';
+      host.innerHTML='<h3 class="wc-project-intro">项目目录分类</h3><div id="wc-project-error" class="wc-error" role="alert"></div><div id="wc-project-message" role="status" aria-live="polite"></div><div id="wc-project-kinds" class="wc-project-kinds" role="group" aria-label="目录类别"></div><form id="wc-project-filter" class="wc-project-filter"><label>查找条目<input id="wc-project-query" type="search" maxlength="500" placeholder="名称、目录或已收录文档" aria-label="查找项目目录"></label><label>来源类型<select id="wc-project-source" aria-label="项目目录来源类型"><option value="">全部来源类型</option></select></label><button class="btn primary" type="submit">查找</button><button id="wc-project-reset" class="btn ghost" type="button">清除筛选</button></form><div class="wc-project-listbar"><span id="wc-project-count" role="status">正在读取目录…</span><span><button id="wc-project-refresh" class="btn small ghost" type="button">刷新目录</button> <a class="btn small ghost" href="#/projects?view=registry">登记项目</a></span></div><p id="wc-project-scope" class="caption-note">关联工具、任务和成果仅列已登记项目的任务及提交记录，不推测目录作者或跨工具协作状态。</p><div id="wc-project-coverage"></div><section class="panel wc-project-catalog" aria-label="项目目录结果"><div id="wc-project-cards"></div><div id="wc-project-pager" class="wc-pager"></div></section>';
       get('query').value=state.query;
       if(state.source_type)get('source').innerHTML=`<option value="">全部来源类型</option><option value="${esc(state.source_type)}" selected>${esc(tools[state.source_type]||state.source_type)}（读取中）</option>`;
       get('source').value=state.source_type;
       get('scope').textContent+=' 工作区内位置显示为“工作区/相对目录”；悬停可看完整路径，复制始终使用完整路径。';
       const navigate=(changes={})=>nav('projects',{kind:state.kind,q:state.query,source_type:state.source_type,page:state.page,...changes});
-      const bindKinds=()=>host.querySelectorAll('[data-wc-project-kind]').forEach(b=>b.onclick=()=>navigate({kind:b.dataset.wcProjectKind,page:1}));
+      function renderKinds(counts){
+        get('kinds').innerHTML=Object.entries(projectKinds).map(([kind,label])=>{
+          const badge=counts?'<span>'+projectCount(counts[projectEntryKinds[kind]])+'</span>':'';
+          return '<button class="btn small" type="button" data-wc-project-kind="'+kind+'" aria-pressed="'+(kind===state.kind)+'">'+label+badge+'</button>';
+        }).join('');
+        host.querySelectorAll('[data-wc-project-kind]').forEach(b=>b.onclick=()=>navigate({kind:b.dataset.wcProjectKind,page:1}));
+      }
+      renderKinds();
       get('filter').onsubmit=e=>{e.preventDefault();navigate({q:get('query').value.trim(),source_type:get('source').value,page:1});};
       get('source').onchange=()=>navigate({q:get('query').value.trim(),source_type:get('source').value,page:1});
       get('reset').onclick=()=>navigate({q:'',source_type:'',page:1});
       let serial=0;
-      async function load(){const request=++serial;try{
-        const [catalogResult,harnessResult]=await Promise.allSettled([api('/api/workcenter/projects?'+new URLSearchParams({entry_kind:projectEntryKinds[state.kind],query:state.query,source_type:state.source_type,page:String(state.page),page_size:'30'})),api('/api/harnesses')]);if(!active()||request!==serial)return;
+      async function load(force=false){const request=++serial;get('refresh').disabled=true;try{
+        const [catalogResult,harnessResult]=await Promise.allSettled([api('/api/workcenter/projects?'+new URLSearchParams({entry_kind:projectEntryKinds[state.kind],...(force?{refresh:'1'}:{}),query:state.query,source_type:state.source_type,page:String(state.page),page_size:'30'})),api('/api/harnesses')]);if(!active()||request!==serial)return;
         if(catalogResult.status==='rejected')throw catalogResult.reason;
         const data=catalogResult.value,toolNames=Object.assign(Object.create(null),tools);
         if(harnessResult.status==='fulfilled')for(const h of rows(harnessResult.value?.items))if(h?.id&&h?.name&&h.id!=='any')toolNames[h.id]=h.name;
         el.dataset.wcRoot=data.root||data.workspace_root||'';
-        get('coverage').innerHTML=projectCoverageHTML(data.coverage);
+        get('coverage').innerHTML=indexStatus(data.index)+projectCoverageHTML(data.coverage);
         const counts=data.counts||{},total=projectCount(data.total),pages=Math.max(1,Math.ceil(total/(Number(data.page_size)||30)));
-        get('kinds').innerHTML=Object.entries(projectKinds).map(([kind,label])=>`<button class="btn small" type="button" data-wc-project-kind="${kind}" aria-pressed="${kind===state.kind}">${label}<span>${projectCount(counts[projectEntryKinds[kind]])}</span></button>`).join('');
+        renderKinds(counts);
         const facets=rows(data.facets?.source_types||data.source_types);
         get('source').innerHTML='<option value="">全部来源类型</option>'+facets.map(s=>`<option value="${esc(s.value)}">${esc(toolNames[s.value]||s.label||s.value)} (${projectCount(s.count)})</option>`).join('')+(state.source_type&&!facets.some(s=>s.value===state.source_type)?`<option value="${esc(state.source_type)}">${esc(toolNames[state.source_type]||state.source_type)}（当前筛选）</option>`:'');get('source').value=state.source_type;
         get('count').textContent=`${projectKinds[state.kind]} · 筛选结果 ${total} 个 · 全目录 ${projectCount(data.catalog_total??Object.values(counts).reduce((sum,v)=>sum+projectCount(v),0))} 个`;
-        get('cards').innerHTML=projectCards(data.items,{kind:state.kind,filtered:!!(state.query||state.source_type),toolNames,workspaceRoot:el.dataset.wcRoot});bindKinds();
+        get('cards').innerHTML=projectCards(data.items,{kind:state.kind,filtered:!!(state.query||state.source_type),toolNames,workspaceRoot:el.dataset.wcRoot});
+        host.querySelectorAll('[data-wc-continue]').forEach(b=>b.onclick=()=>nav('projects',{resume:b.dataset.wcContinue,workspace:el.dataset.wcRoot}));
         host.querySelectorAll('[data-wc-project]').forEach(b=>b.onclick=()=>nav('reports',{project_id:b.dataset.wcProject}));
         host.querySelectorAll('[data-wc-project-copy]').forEach(b=>b.onclick=()=>copyPath?.(b.dataset.wcProjectCopy));
         host.querySelectorAll('[data-wc-project-reveal]').forEach(b=>b.onclick=async()=>{if(!active()||b.disabled)return;b.disabled=true;get('error').textContent='';try{await api('/api/workcenter/reveal',{body:{document_id:b.dataset.wcProjectReveal,_workspace_root:el.dataset.wcRoot}});if(active())get('message').textContent='已请求打开已收录资料所在文件夹。';}catch(e){if(active())get('error').textContent=e.message;}finally{if(active())b.disabled=false;}});
         get('pager').innerHTML=`<button id="wc-project-prev" class="btn small" ${state.page<=1?'disabled':''}>上一页</button><span>第 ${state.page} / ${pages} 页 · 本页 ${rows(data.items).length} 个</span><button id="wc-project-next" class="btn small" ${state.page>=pages?'disabled':''}>下一页</button>`;get('prev').onclick=()=>navigate({page:state.page-1});get('next').onclick=()=>navigate({page:state.page+1});
-      }catch(e){if(active()&&request===serial){get('error').textContent=e.message;get('count').textContent='目录读取失败，请刷新重试。';}}}
+      }catch(e){if(active()&&request===serial){get('error').textContent=e.message;get('count').textContent='目录读取失败，请刷新重试。';}}finally{if(active()&&request===serial)get('refresh').disabled=false;}}
+      get('refresh').onclick=()=>load(true);
       await load();
     };
   }

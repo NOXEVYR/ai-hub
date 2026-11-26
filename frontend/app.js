@@ -279,7 +279,7 @@
 
   // ---------- 路由 ----------
   const titles = { overview: "工作总览", models: "模型管理", workflows: "工作流", updates: "模型更新", analysis: "使用分析",
-    assets:"素材管理", images: "图片生成记录", llm: "语言与语音", files: "文件空间", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作区设置", collaboration:"协作与记忆", settings: "软件设置", organizer: "安全区整理" };
+    assets:"素材管理", images: "图片生成记录", llm: "语言与语音", files: "文件空间", lifecycle: "文件台账与生命周期", traces:"会话与文件追溯", reports: "项目与报告", projects:"跨工具项目", capabilities:"能力中心", workspace:"工作区设置", collaboration:"协作与记忆", settings: "软件设置", organizer: "安全区整理" };
   const parentPage=page=>({images:'assets',llm:'models',analysis:'models',updates:'models'}[page]||page);
   const modelTabs=page=>`<nav class="resource-tabs" aria-label="模型管理视图">${[['models','全部模型'],['llm','语言与语音'],['analysis','使用分析'],['updates','版本更新']].map(([key,label])=>`<a href="#/${key}" ${key===page?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`;
   function parseHash(hash = location.hash) {
@@ -302,6 +302,7 @@
     if (activePage === 'capabilities') state = AIHubCapabilityLibrary.capture(view, AIHubCapabilities);
     if (activePage === 'files') state = { path: fileState.path, query: value('fs-q') };
     if (activePage === 'organizer') state = AIHubOrganizer.capture(view);
+    if (activePage === 'lifecycle') state = AIHubFileLifecycle.capture(view);
     if (activePage === 'projects') state = view?.dataset.wcView==='registry' ? {legacy:AIHubRegistry.capture(view.querySelector('#wc-project-content'))} : AIHubWorkcenter.captureProjects(view);
     if (activePage === 'workspace') state = AIHubWorkspace.capture(view);
     if (activePage === 'collaboration') state = AIHubCollaboration.capture(view);
@@ -394,8 +395,10 @@
   const pages = {};
   pages.assets = AIHubMedia.createPage({api,heading,icon,fmtSize,fmtDate,thumbURL,pager,empty,openMedia,requestDelete:requestImageDeletion});
   pages.organizer = AIHubOrganizer.createPage({api, icon, heading, toast, pollJobs, openModal, closeModal, refresh: route});
+  pages.traces = AIHubTraceHistory.createPage({api,nav});
+  pages.lifecycle = AIHubFileLifecycle.createPage({api,heading});
   const registryEnv={api,heading,toast,openModal,closeModal,refresh:route,nav,copyPath};
-  pages.projects=AIHubWorkcenter.createProjects({...registryEnv,legacyPage:AIHubRegistry.createProjects(registryEnv)});
+  pages.projects=AIHubWorkcenter.createProjects({...registryEnv,legacyPage:AIHubRegistry.createProjects(registryEnv),showToolNavigation:AIHubTraceHistory.showToolNavigation});
   pages.capabilities=AIHubCapabilityLibrary.createPage({api,heading,taskUI:AIHubCapabilities,copyPath,updateRoute:hash=>navigation.replaceCurrent(hash)});
   pages.workspace=AIHubWorkspace.createPage({api,heading,toast,pollJobs,openModal,closeModal});
   pages.collaboration=AIHubCollaboration.createPage({api,heading,openModal,closeModal,copyText:async value=>{await navigator.clipboard.writeText(value);}});
