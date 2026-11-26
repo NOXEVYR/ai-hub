@@ -347,6 +347,7 @@ class HarnessTests(unittest.TestCase):
             tool_adapters.project_rules('unregistered', project, self.cfg)
 
     def test_discovery_is_bounded_metadata_only_and_never_registers(self):
+        from aihub import harness_discovery
         path = self.base / 'bin'
         path.mkdir()
         executable = path / ('claude.exe' if os.name == 'nt' else 'claude')
@@ -356,6 +357,8 @@ class HarnessTests(unittest.TestCase):
         original = copy.deepcopy(self.cfg)
         with mock.patch.dict(os.environ, {'PATH': str(path), 'APPDATA': str(self.base / 'Roaming'),
                                          'LOCALAPPDATA': str(self.base / 'Local')}), \
+                mock.patch.object(harness_discovery, '_process_candidates', return_value=([], harness_discovery._summary())), \
+                mock.patch.object(harness_discovery, '_registry_candidates', return_value=([], {})), \
                 mock.patch.object(Path, 'home', return_value=self.base / 'SyntheticHome'), \
                 mock.patch.object(Path, 'read_bytes', side_effect=AssertionError('read')), \
                 mock.patch.object(Path, 'read_text', side_effect=AssertionError('read')):

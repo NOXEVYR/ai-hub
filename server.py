@@ -14,6 +14,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -435,6 +436,12 @@ def cmd_serve(args):
         if args.open:
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         if not getattr(args, "no_initial_scan", False):
+            from aihub import workcenter
+            if cfgmod.workspace_status(CFG)["available"]:
+                try:
+                    workcenter.warm_index(CFG)
+                except (OSError, ValueError, sqlite3.Error):
+                    RUNTIME_LOG.warning('workcenter prewarm unavailable; retry on next catalog request')
             maintenance_worker = collaboration_maintenance.start_scheduler(CFG)
             update_manager.start_scheduler()
         httpd.serve_forever()

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from tools.aihub_mcp import Bridge, BridgeError
 from tools.mcp_endpoint import EndpointError, resolve_endpoint
@@ -154,6 +155,60 @@ class InstallationEndpointTests(unittest.TestCase):
         self.assertEqual([path for path, _ in self.first.posts],
                          ['/api/collaboration/mcp/client_heartbeat', '/api/collaboration/mcp/task_list'])
         self.assertNotIn(b'SYNTHETIC_NEVER_TRANSMIT', result.stdout + result.stderr)
+
+
+class DisconnectedBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.endpoint = {'port': 18765, 'install_identity': 'fixture-install', 'service_instance_id': 'first'}
+        resolver = patch('tools.aihub_mcp.resolve_endpoint', return_value=self.endpoint)
+        self.resolve = resolver.start()
+        self.addCleanup(resolver.stop)
+        transport = patch('tools.aihub_mcp.http.client.HTTPConnection')
+        self.connection = transport.start().return_value
+        self.addCleanup(transport.stop)
+        self.bridge = Bridge(8765, 'fixture-client', 'codex', install_root='fixture-installation')
+
+    def rejected(self, bridge, code):
+        with self.assertRaises(BridgeError) as raised:
+            bridge.request('task_finish', {'task_id': 'fixture-task', 'summary': 'fixture'})
+        self.assertEqual(raised.exception.error_code, code)
+        self.connection.request.assert_called_once()
+        self.assertEqual(self.connection.request.call_args.args[:2], ('POST', '/api/collaboration/mcp/task_finish'))
+
+    def test_marked_conflict_is_identified_from_headers_without_reading_body(self):
+        reply = self.connection.getresponse.return_value
+        reply.status = 409
+        reply.getheader.return_value = '1'
+        self.rejected(self.bridge, 'endpoint_identity_invalid')
+        reply.read.assert_not_called()
+        reply.close.assert_called_once_with()
+        self.resolve.assert_called_once_with('fixture-installation', include_identity=True)
+
+    def test_disconnect_rechecks_only_identity_once_and_never_replays(self):
+        self.connection.getresponse.side_effect = ConnectionResetError()
+        for next_health, code in (
+                (dict(self.endpoint, service_instance_id='second'), 'endpoint_identity_invalid'),
+                (EndpointError('endpoint_identity_invalid'), 'endpoint_identity_invalid'),
+                (self.endpoint, 'network_unavailable'),
+                (EndpointError('network_unavailable'), 'network_unavailable')):
+            with self.subTest(next_health=next_health):
+                self.resolve.reset_mock()
+                self.connection.request.reset_mock()
+                self.resolve.side_effect = [self.endpoint, next_health]
+                self.rejected(self.bridge, code)
+                self.assertEqual(self.resolve.call_count, 2)
+
+    def test_legacy_port_and_lost_success_body_do_not_revalidate_or_resend(self):
+        self.connection.getresponse.side_effect = ConnectionResetError()
+        self.rejected(Bridge(8765, 'fixture-client', 'codex'), 'network_unavailable')
+        self.resolve.assert_not_called()
+        self.connection.request.reset_mock()
+        self.connection.getresponse.side_effect = None
+        reply = self.connection.getresponse.return_value
+        reply.status = 200
+        reply.read.side_effect = ConnectionResetError()
+        self.rejected(self.bridge, 'network_unavailable')
+        self.resolve.assert_called_once_with('fixture-installation', include_identity=True)
 
 
 if __name__ == '__main__':

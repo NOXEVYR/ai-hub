@@ -1219,6 +1219,12 @@ def workcenter_request(db, cfg, params, body):
             result = workcenter.removal_list(snapshot, query)
         elif action == 'projects':
             result = workcenter.list_projects(snapshot, query)
+        elif action == 'project-resume':
+            from . import project_resume
+            expected = query.pop('_workspace_root', None)
+            if expected is not None and cfgmod._key(expected) != cfgmod._key(snapshot.get('ai_root') or ''):
+                return _err('工作环境已切换，请重新选择项目。', 409)
+            result = project_resume.resume(snapshot, query)
         elif action == 'document':
             ident = query.get('id')
             if not ident and query.get('path'):
@@ -1326,11 +1332,83 @@ def harness_request(db, cfg, params, body):
         return _err('工作端登记暂时不可用，请稍后重试。', 503)
 
 
+def file_lifecycle_request(db, cfg, params, body):
+    from . import file_lifecycle
+    action = _q(params, 'action', 'registrations')
+    try:
+        if action == 'registrations':
+            return _json_bytes(file_lifecycle.registrations(cfg))
+        if not isinstance(body, dict):
+            return _err('文件登记请求必须是对象。')
+        with organization.LOCK:
+            expected = body.get('_workspace_root')
+            if not isinstance(expected, str) or cfgmod._key(expected) != cfgmod._key(cfg.get('ai_root') or ''):
+                return _err('工作区已切换，请刷新后重试。', 409)
+            if action == 'inventory':
+                result = file_lifecycle.inventory(cfg, body.get('path'), body.get('max_entries', 5000))
+            elif action == 'registration-preview':
+                result = file_lifecycle.registration_preview(cfg, body.get('record'))
+            elif action == 'registration-save':
+                result = file_lifecycle.registration_save(cfg, body.get('token'))
+            else:
+                return _err('不支持此操作。')
+            return _json_bytes(result)
+    except (ValueError, TypeError, OSError) as error:
+        return _err(str(error), 400)
+
+
+def trace_request(db, cfg, params, body):
+    from . import trace_history as trace
+    action = _q(params, 'action')
+    snapshot = copy.deepcopy(cfg)
+    args = {k:_q(params,k) for k in params if k!='action'} if body is None else body
+    try:
+        if not isinstance(args, dict):
+            raise ValueError('追溯请求格式不正确。')
+        args = dict(args)
+        root = args.pop('_workspace_root', None)
+        if (body is not None or root is not None) and (not isinstance(root,str) or
+                cfgmod._key(root) != cfgmod._key(snapshot.get('ai_root') or '')):
+            return _err('工作区已切换，请刷新追溯页面。',409)
+        if action == 'status':
+            result = trace.status(snapshot)
+        elif action == 'sessions':
+            result = trace.search(snapshot,args)
+        elif action == 'session':
+            result = trace.detail(snapshot,args.get('key'))
+        elif action == 'sync':
+            result = trace.start(snapshot,args.get('tool','all'))
+        elif action == 'cancel':
+            result = trace.cancel(snapshot)
+        elif action == 'share':
+            result = trace.share(snapshot,args.get('key'),args.get('revision'),args.get('enabled'))
+        elif action == 'review':
+            result = trace.file_review(snapshot,args.get('key'),args.get('path'),args.get('state'))
+        elif action == 'preview':
+            result = trace.preview(snapshot,args.get('key'),args.get('path'))
+        elif action == 'recycle':
+            with organization.LOCK:
+                if cfgmod._key(root) != cfgmod._key(cfg.get('ai_root') or ''):
+                    return _err('工作区已切换，请重新预览。',409)
+                result = trace.apply_recycle(snapshot,args.get('token'))
+        else:
+            raise ValueError('未知追溯操作。')
+        return _json_bytes({**result,'workspace_root':snapshot.get('ai_root','')})
+    except (ValueError,TypeError,OSError,KeyError) as error:
+        return _err(str(error),400)
+    except sqlite3.Error:
+        return _err('本机会话索引暂不可用，请稍后重试。',503)
+
+
 ROUTES = [
+    ('GET', r'^/api/traces/(?P<action>status|sessions|session)$', trace_request),
+    ('POST', r'^/api/traces/(?P<action>sync|cancel|share|review|preview|recycle)$', trace_request),
+    ('GET', r'^/api/file-lifecycle$', file_lifecycle_request),
+    ('POST', r'^/api/file-lifecycle/(?P<action>inventory|registration-preview|registration-save)$', file_lifecycle_request),
     ('GET', r'^/api/harnesses$', harness_request),
     ('GET', r'^/api/harnesses/(?P<action>discover|check|config)$', harness_request),
     ('POST', r'^/api/harnesses/(?P<action>save)$', harness_request),
-    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document|removals)$', workcenter_request),
+    ('GET', r'^/api/workcenter/(?P<action>documents|projects|document|removals|project-resume)$', workcenter_request),
     ('POST', r'^/api/workcenter/(?P<action>classify|reveal|removal-preview|removal-apply|removal-restore)$', workcenter_request),
     ('POST', r'^/api/context/reveal$', context_reveal),
     ('GET', r'^/api/capabilities/(?P<action>list|discover)$', capabilities_request),

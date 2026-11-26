@@ -3,7 +3,7 @@ from pathlib import Path
 import copy
 import sys
 
-from . import collaboration, collaboration_maintenance as maintenance, collaboration_resources as resources, config, harnesses
+from . import collaboration, collaboration_maintenance as maintenance, collaboration_resources as resources, config, harnesses, context_bootstrap
 
 MAINTENANCE_ACTIONS = {'source_list', 'source_candidates', 'source_inventory', 'source_add',
                        'source_scan', 'source_reconfirm_preview', 'source_reconfirm_apply',
@@ -11,7 +11,8 @@ MAINTENANCE_ACTIONS = {'source_list', 'source_candidates', 'source_inventory', '
 CAPABILITY_ACTIONS = {'capability_publish', 'capability_list', 'capability_recommend', 'capability_dispatch'}
 MCP_ACTIONS = {'client_heartbeat', 'task_create', 'task_list', 'task_claim', 'task_finish',
                'task_handoff', 'artifact_write', 'artifact_register', 'artifact_list', 'report_submit',
-               'memory_propose', 'memory_search', 'retention_preview', 'source_list', 'submission_schema', 'submission_receipt'} | CAPABILITY_ACTIONS | resources.ACTIONS
+               'memory_propose', 'memory_search', 'retention_preview', 'source_list', 'submission_schema', 'submission_receipt',
+               'project_resume', 'document_search', 'document_read','trace_search','trace_read'} | CAPABILITY_ACTIONS | resources.ACTIONS | context_bootstrap.ACTIONS
 
 
 def integration_config(cfg, tool='codex', client_id=None):
@@ -98,7 +99,24 @@ def _execute(cfg, action, body, actor='ui'):
         if not tool or not tool['enabled'] or tool['connection_mode'] != 'mcp_stdio':
             raise PermissionError('工作端未登记、已停用或仅启用手动交接。')
         evidence_key = tool['evidence_key']
-    if action in CAPABILITY_ACTIONS:
+    if action in {'trace_search','trace_read'}:
+        from . import trace_history
+        query = {k:v for k,v in body.items() if k!='client_id'}
+        if action == 'trace_read' and set(query) != {'key'}:
+            raise ValueError('请提供已共享会话的 ID。')
+        if action == 'trace_search' and set(query) - {'q','tool','file','file_exact','page'}:
+            raise ValueError('未知共享会话查询条件。')
+        result = (trace_history.search(cfg,query,shared_only=True) if action=='trace_search'
+                  else trace_history.detail(cfg,query['key'],shared_only=True))
+    elif action in {'project_resume', 'document_search', 'document_read'}:
+        from . import project_resume
+        query = {key: value for key, value in body.items() if key != 'client_id'}
+        reader = {'project_resume': project_resume.resume, 'document_search': project_resume.search_documents,
+                  'document_read': project_resume.read_excerpt}[action]
+        result = reader(cfg, query)
+    elif action in context_bootstrap.ACTIONS:
+        result = context_bootstrap.execute(cfg, action, body, actor)
+    elif action in CAPABILITY_ACTIONS:
         from . import capabilities
         result = capabilities.execute(cfg, action, body, actor)
     elif action in MAINTENANCE_ACTIONS:

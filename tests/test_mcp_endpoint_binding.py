@@ -112,7 +112,16 @@ class EndpointBindingTests(unittest.TestCase):
                 connection.putheader(key, value)
             # The incomplete-body case proves the server replies without waiting
             # for or draining business data, rather than merely skipping dispatch.
-            connection.endheaders(payload if send_body else None)
+            # Make the small complete request available in one write. Otherwise
+            # Windows may race the fixture's second write with the expected close.
+            # The separate incomplete request still withholds the body entirely.
+            if send_body:
+                request_parts = []
+                with patch.object(connection, 'send', side_effect=request_parts.append):
+                    connection.endheaders(payload)
+                connection.send(b''.join(request_parts))
+            else:
+                connection.endheaders()
             response = connection.getresponse()
             return response.status, response.getheader('X-AIHub-Endpoint-Rejected'), json.loads(response.read())
         finally:

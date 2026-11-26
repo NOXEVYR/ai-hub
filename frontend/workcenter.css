@@ -9,3 +9,17 @@
 @media(max-width:1250px){.workcenter-page .wc-filters{grid-template-columns:repeat(2,minmax(0,1fr)) auto}.workcenter-page .wc-filters label:first-child{grid-column:1/-1}.workcenter-page .wc-layout{grid-template-columns:minmax(0,1fr) minmax(290px,1fr)}}
 @media(max-width:1000px){.workcenter-page .wc-layout{grid-template-columns:1fr}.workcenter-page .wc-reader{position:static;max-height:none}.workcenter-page .wc-text{max-height:65vh}.workcenter-page .wc-coverage{align-items:flex-start}}
 @media(max-width:620px){.workcenter-page .wc-filters{grid-template-columns:1fr 1fr}.workcenter-page .wc-filters button{grid-column:1/-1}.workcenter-page .wc-coverage{flex-direction:column;gap:12px}.workcenter-page .wc-classify form{grid-template-columns:1fr}.workcenter-page .wc-document{padding:13px}.workcenter-page .wc-tools{gap:6px}.workcenter-page .wc-tools button{font-size:11px}.workcenter-page .wc-pager{gap:8px}.workcenter-page .wc-text{padding:13px}}
+.trace-form{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+.trace-form label{display:grid;gap:5px;min-width:125px}
+.trace-form input,.trace-form select{max-width:100%}
+.trace-row,.trace-file{padding:9px 0;border-bottom:1px solid var(--border,#363d56);overflow-wrap:anywhere}
+.trace-row{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center}
+.trace-file small{display:block;margin:5px 0}
+.trace-message{margin:8px 0}.trace-message summary{cursor:pointer;overflow-wrap:anywhere}
+.trace-message pre,.wc-resume pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.wc-resume li{margin:6px 0}
+.workcenter-page .wc-trace-nav{padding:16px 18px;margin:0 0 20px;background:var(--panel);border:1px solid var(--border);border-radius:10px}
+.workcenter-page .wc-trace-heading,.workcenter-page .wc-trace-links{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.workcenter-page .wc-trace-heading{justify-content:space-between;margin-bottom:12px}
+.workcenter-page .wc-trace-heading h2{font-size:15px;margin:0}
+.workcenter-page .wc-trace-count:not(:empty){margin-inline-start:6px;color:var(--muted);font-variant-numeric:tabular-nums}
